@@ -64,15 +64,19 @@ def execute(*args, **kwargs):
     try:
         _, clz = search_module(name,
                                lambda (_, cl): issubclass(cl, Action) and cl != Action).pop()
+
+    except AttributeError:
+        raise AttributeError('Cannot handle {} requests'.format(name))
+
+    try:
         data = kwargs.get('data', None)
         log.debug(
             'Found! Requesting an instance of {} to perform a/n {} action described as:\n{}'.format(clz, name,
                                                                                                     data))
 
         action = clz(data)
-        action.submit()
-        log.info('A {} request was successfully submitted with id {}'.format(name, action.request_id))
+        rid = action.submit()
+        if rid is not None:
+            log.info('A {} request was successfully submitted with id {}'.format(name, rid))
     except IndexError:
         raise EnvironmentError('Action module found but class is missing: "{}"'.format(name))
-    except AttributeError, e:
-        raise AttributeError('Cannot handle {} requests'.format(name))

@@ -90,6 +90,7 @@ class Action(object):
         self.request.parse(self.__message)
         self.__action_id = u'{}@{}'.format(self.request.message_id, self.request.submitted_by)
         self.__request_id = self.sink.save(self)
+        return self.__request_id
 
 
 class Sink(object):

@@ -166,13 +166,18 @@ class DeliveryAction(Action):
         super(DeliveryAction, self).__init__(message)
 
     def __reply_accepted(self):
-        graph = build_reply(accepted_template, self.request.message_id)
-        reply(graph.serialize(format='turtle'), exchange=exchange,
-              routing_key='stoa.response.{}'.format(self.request.submitted_by),
-              **self.request.broker)
-        if self.sink.delivery is None:
-            self.sink.delivery = 'accepted'
-        log.info('Request {} was accepted'.format(self.request_id))
+        try:
+            graph = build_reply(accepted_template, self.request.message_id)
+            reply(graph.serialize(format='turtle'), exchange=exchange,
+                  routing_key='stoa.response.{}'.format(self.request.submitted_by),
+                  **self.request.broker)
+            if self.sink.delivery is None:
+                self.sink.delivery = 'accepted'
+            log.info('Request {} was accepted'.format(self.request_id))
+        except KeyError:
+            pass
+        except IOError, e:
+            log.warning(e.message)
 
     def _reply_failure(self, reason=None):
         try:
@@ -184,6 +189,8 @@ class DeliveryAction(Action):
         except KeyError:
             # Delivery channel data may be invalid
             pass
+        except IOError, e:
+            log.warning(e.message)
 
     def submit(self):
         super(DeliveryAction, self).submit()
