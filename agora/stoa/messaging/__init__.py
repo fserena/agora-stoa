@@ -87,7 +87,11 @@ def __setup_queues():
         channel.basic_consume(callback, queue=queue)
 
         log.info('Ready to accept requests')
-        channel.start_consuming()
+        while True:
+            try:
+                channel.start_consuming()
+            except Exception, e:
+                log.error('Messaging system failed due to: {}'.format(e.message))
 
 
 th = Thread(target=__setup_queues)
