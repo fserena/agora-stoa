@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "author": "Fernando Serena",
+  "email": "fernando.serena@centeropenmiddleware.com",
+  "github": "https://github.com/smartdeveloperhub/agora-stoa.git",
+  "description": "An extensible framework to implement messaging-based services that interact with a Linked Data Platform powered by Agora"
+}

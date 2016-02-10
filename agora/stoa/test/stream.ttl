@@ -1,0 +1,51 @@
+##-- DECLARATION -------------------------------------------------------------##
+
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+@prefix curator: <http://www.smartdeveloperhub.org/vocabulary/curator#> .
+@prefix amqp:    <http://www.smartdeveloperhub.org/vocabulary/amqp#> .
+@prefix types:   <http://www.smartdeveloperhub.org/vocabulary/types#> .
+
+@prefix ci:      <http://www.smartdeveloperhub.org/vocabulary/ci#> .
+@prefix scm:     <http://www.smartdeveloperhub.org/vocabulary/scm#> .
+
+@prefix doap:    <http://usefulinc.com/ns/doap#> .
+@prefix foaf:    <http://xmlns.com/foaf/0.1/> .
+@prefix oslc_auto: <http://open-services.net/ns/auto#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+
+##-- EXAMPLE ENRICHMENT REQUEST ----------------------------------------------##
+
+<#request> a curator:StreamRequest ;
+  curator:messageId "00000000-0000-0000-0000-000000000005"^^types:UUID ;
+  curator:submittedBy <#connector> ;
+  curator:submittedOn "2015-09-29T09:30:10+01:00"^^xsd:dateTime ;
+  curator:replyTo <#deliveryChannel> .
+
+<#connector> a foaf:Agent ;
+  curator:agentId "00000000-0000-0000-0001-000000000001"^^types:UUID .
+
+<#deliveryChannel> a curator:DeliveryChannel ;
+  amqp:broker <#broker> ;
+  amqp:exchangeName ""^^types:Name ;
+  amqp:routingKey ""^^types:Name .
+
+<#broker> a amqp:Broker ;
+  amqp:host "localhost"^^types:Hostname ;
+  amqp:port "5672"^^types:Port ;
+  amqp:virtualHost ""^^types:Path .
+
+_:repository a curator:Variable ;
+  curator:label "?s" ;
+  doap:developer  _:dev ;
+  doap:name "maven-hpi-plugin" .
+
+_:dev a curator:Variable ;
+  curator:label "?d" ;
+  foaf:name _:name .
+
+_:name a curator:Variable ;
+  curator:label "?n" .

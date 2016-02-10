@@ -1,0 +1,10 @@
+graph_store/
+.env/
+.idea/
+*.pyc
+*.egg-info
+*.owl
+*.xml
+dist/
+.coverage
+store/

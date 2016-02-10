@@ -1,0 +1,12 @@
+nose
+redis
+hiredis
+Flask
+Flask-Negotiate
+rdflib
+networkx
+futures
+rfc3987
+pika
+Agora-Client
+shortuuid
