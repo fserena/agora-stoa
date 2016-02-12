@@ -21,22 +21,19 @@
   limitations under the License.
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
-import calendar
 import logging
 import traceback
 
-from datetime import datetime as dt
 from redis.lock import Lock
 
 from abc import ABCMeta, abstractmethod
 from agora.client.wrapper import Agora
-from agora.scholar.store.triples import cache, load_stream_triples
 from agora.stoa.actions.core import STOA, RDF
 from agora.stoa.actions.core.delivery import DeliveryRequest, DeliveryAction, DeliveryResponse, DeliverySink
 from agora.stoa.actions.core.utils import CGraph, GraphPattern
 from agora.stoa.server import app
 from agora.stoa.store import r
-from rdflib import Literal, XSD
+from rdflib import Literal
 from shortuuid import uuid
 
 __author__ = 'Fernando Serena'
@@ -201,10 +198,6 @@ class FragmentSink(DeliverySink):
             n_fragment_reqs = r.scard('fragments:{}:requests'.format(self._fragment_id))
             log.info('Fragment {} is supporting {} more requests'.format(self._fragment_id, n_fragment_reqs))
 
-    @property
-    def ready(self):
-        return self.backed
-
     @abstractmethod
     def _remove(self, pipe):
         self._fragment_id = r.hget('{}'.format(self._request_key), 'fragment_id')
@@ -230,10 +223,6 @@ class FragmentSink(DeliverySink):
             pass
 
     @property
-    def backed(self):
-        return self.fragment_updated_on is not None  # and self.fragment_on_demand is None
-
-    @property
     def fragment_id(self):
         return self._fragment_id
 
@@ -241,22 +230,6 @@ class FragmentSink(DeliverySink):
         if self.mapping is not None:
             return self.mapping.get(v, v)
         return v
-
-    @property
-    def fragment_updated_on(self):
-        return r.get('fragments:{}:updated'.format(self._fragment_id))
-
-    @property
-    def fragment_on_demand(self):
-        return r.get('fragments:{}:on_demand'.format(self._fragment_id))
-
-    @property
-    def is_pulling(self):
-        return r.get('fragments:{}:pulling'.format(self._fragment_id)) is not None
-
-    @property
-    def fragment_contexts(self):
-        return r.smembers('fragments:{}:contexts'.format(self._fragment_id))
 
     @property
     def gp(self):
@@ -269,77 +242,6 @@ class FragmentResponse(DeliveryResponse):
     def __init__(self, rid):
         super(FragmentResponse, self).__init__(rid)
 
+    @abstractmethod
     def build(self):
         super(FragmentResponse, self).build()
-        lock_consume_key = 'fragments:{}:lock:consume'.format(self.sink.fragment_id)
-        c_lock = r.lock(lock_consume_key, lock_class=Lock)
-        c_lock.acquire()
-        generator = self._build()
-        try:
-            for response in generator:
-                yield response
-        except Exception, e:
-            traceback.print_exc()
-            log.error(e.message)
-        finally:
-            c_lock.release()
-
-    @abstractmethod
-    def _build(self):
-        pass
-
-    @staticmethod
-    def query(query_object):
-        return cache.query(query_object)
-
-    def graph(self, data=False):
-        if data:
-            return cache.get_context('/' + self.sink.fragment_id)
-        else:
-            return cache
-
-    def fragment(self, stream=False, timestamp=None, result_set=False):
-        def __transform(x):
-            if x.startswith('"'):
-                return Literal(x.replace('"', ''), datatype=XSD.string).n3(self.graph(stream).namespace_manager)
-            return x
-
-        def __build_query_pattern(x):
-            if '"' in x:
-                return '{ %s }' % x
-            return 'OPTIONAL { %s }' % x
-
-        def __read_contexts():
-            contexts = self.sink.fragment_contexts
-            triple_patterns = {context: eval(context)[1] for context in contexts}
-            for context in self.sink.fragment_contexts:
-                for (s, p, o) in self.graph().get_context(context):
-                    yield triple_patterns[context], s, p, o
-
-        if timestamp is None:
-            timestamp = calendar.timegm(dt.now().timetuple())
-
-        from_streaming = stream and not self.sink.backed
-
-        if from_streaming:
-            triples = load_stream_triples(self.sink.fragment_id, timestamp)
-            return triples, stream
-        elif stream:
-            return __read_contexts(), from_streaming
-
-        gp = [' '.join([__transform(self.sink.map(part)) for part in tp.split(' ')]) for tp in self.sink.gp]
-        if result_set:
-            # where_gp = ' '.join(map(__build_query_pattern, gp))
-            where_gp = ' . '.join(gp)
-            # TODO: Consider using selective OPTIONAL clauses
-            query = """SELECT %s WHERE { %s }""" % (' '.join(self.sink.preferred_labels), where_gp)
-        else:
-            where_gp = ' . '.join(gp)
-            query = """CONSTRUCT WHERE { %s }""" % where_gp
-
-        result = []
-        try:
-            result = self.graph(data=True).query(query)
-        except Exception, e:  # ParseException from query
-            log.warning(e.message)
-        return result, stream

@@ -275,10 +275,6 @@ class DeliverySink(Sink):
             p.execute()
         log.info('Request {} delivery state is now "{}"'.format(self._request_id, value))
 
-    @abstractproperty
-    def ready(self):
-        return False
-
 
 class DeliveryResponse(Response):
     __metaclass__ = ABCMeta
