@@ -39,8 +39,8 @@ log = logging.getLogger('agora.stoa.messaging.reply')
 
 
 def reply(message, exchange=None, routing_key=None, headers=None, host=BROKER['host'], port=BROKER['port'], vhost=None):
+    connection_params = pika.ConnectionParameters(host=host, port=port)
     try:
-        connection_params = pika.ConnectionParameters(host=host, port=port)
         connection = pika.BlockingConnection(connection_params)
     except ConnectionClosed, e:
         log.warning('Bad connection parameters: {}'.format(connection_params))
@@ -63,7 +63,7 @@ def reply(message, exchange=None, routing_key=None, headers=None, host=BROKER['h
                                      mandatory=True)
 
         if not sent:
-            raise EnvironmentError('The channel {} does not exist'.format(routing_key))
+            raise IOError('The channel {} does not exist'.format(routing_key))
         log.debug('Sent message to delivery channel: \n -exchange: {}\n -routing_key: {}'.format(
                 exchange, routing_key
         ))
