@@ -51,8 +51,8 @@ def _broker_conf(def_host, def_port):
 
 def _exchange_conf(def_exchange, def_queue):
     return {
-        'exchange': def_exchange,
-        'queue': def_queue
+        'exchange': os.environ.get('EXCHANGE_NAME', def_exchange),
+        'queue': os.environ.get('QUEUE_NAME', def_queue)
     }
 
 
