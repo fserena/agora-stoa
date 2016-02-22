@@ -32,6 +32,10 @@ __author__ = 'Fernando Serena'
 
 
 def parse_bool(s):
+    """
+    :param s: String to be parsed
+    :return: True iff s is equal to 'True', otherwise False
+    """
     if type(s) == str:
         if s == 'True':
             return True
@@ -71,7 +75,12 @@ class CGraph(Graph):
 
 
 def chunks(l, n):
-    """Yield successive n-sized chunks from l."""
+    """
+    Yield successive n-sized chunks from l.
+    :param l:
+    :param n:
+    :return: Generated chunks
+    """
     if n:
         if getattr(l, '__iter__') is not None:
             l = l.__iter__()
@@ -87,18 +96,26 @@ def chunks(l, n):
 
 
 class GraphPattern(set):
+    """
+    An extension of the set class that represents a graph pattern, which is a set of triple patterns
+    """
+
     def __init__(self, s=()):
         super(GraphPattern, self).__init__(s)
 
-    @property
-    def gp(self):
-        return self
+    # @property
+    # def gp(self):
+    #     return self
 
     @property
     def wire(self):
+        """
+        Creates a graph from the graph pattern
+        :return: The graph (networkx)
+        """
         g = nx.DiGraph()
         for tp in self:
-            (s, p, o) = tuple(tp.split(' '))
+            (s, p, o) = tuple(tp_parts(tp.strip()))
             edge_data = {'link': p}
             g.add_node(s)
             if o.startswith('?'):
@@ -111,6 +128,9 @@ class GraphPattern(set):
         return g
 
     def __eq__(self, other):
+        """
+        Two graph patterns are equal if they are isomorphic**
+        """
         if not isinstance(other, GraphPattern):
             return super(GraphPattern, self).__eq__(other)
 
@@ -121,6 +141,9 @@ class GraphPattern(set):
         return str(list(self))
 
     def mapping(self, other):
+        """
+        :return: If there is any, the mapping with another graph pattern
+        """
         if not isinstance(other, GraphPattern):
             return None
 
@@ -139,3 +162,17 @@ class GraphPattern(set):
             return mapping.pop()
         else:
             return None
+
+
+def tp_parts(tp):
+    """
+    :param tp: A triple pattern string
+    :return: A string-based 3-tuple like (subject, predicate, object)
+    """
+    if tp.endswith('"'):
+        parts = [tp[tp.find('"'):]]
+        st = tp.replace(parts[0], '').rstrip()
+        parts = st.split(" ") + parts
+    else:
+        parts = tp.split(' ')
+    return tuple(parts)

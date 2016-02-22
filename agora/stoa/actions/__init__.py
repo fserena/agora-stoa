@@ -25,7 +25,7 @@ import inspect
 import logging
 
 from agora.stoa.actions.core.base import Action
-# from agora.stoa.actions.ext import stream, query
+from types import ModuleType
 
 __author__ = 'Fernando Serena'
 
@@ -34,23 +34,46 @@ action_modules = {}
 
 
 def register_module(name, module):
+    """
+    Registers a Stoa module
+    :param name: The unique module name
+    :param module: Module instance
+    """
+    if name in action_modules:
+        raise NameError('The module {} already exists'.format(name))
+    if not isinstance(module, ModuleType):
+        raise AttributeError('{} is not a valid module instance'.format(module))
     action_modules[name] = module
 
 
 def search_module(module, predicate, limit=1):
+    """
+    Searches in a module for elements that satisfy a given predicate
+    :param module: A module name
+    :param predicate: A predicate to check module elements
+    :param limit: Default 1
+    :return:
+    """
     py_mod = action_modules.get(module, None)
 
     if py_mod is not None:
         cand_elms = filter(predicate,
                            inspect.getmembers(py_mod, lambda x: inspect.isclass(x) and not inspect.isabstract(x)))
         if len(cand_elms) > limit:
-            raise ValueError('Too many elements in module {}'.format(module))
+            raise EnvironmentError('Too many elements in module {}'.format(module))
         return cand_elms
 
     return None
 
 
 def get_instance(module, clz, *args):
+    """
+    Creates an instance of a given class and module
+    :param module: Module name
+    :param clz: Instance class
+    :param args: Creation arguments
+    :return: The instance
+    """
     module = action_modules[module]
     class_ = getattr(module, clz)
     instance = class_(*args)
@@ -58,6 +81,13 @@ def get_instance(module, clz, *args):
 
 
 def execute(*args, **kwargs):
+    """
+    Prepares and submits a Stoa-action
+    :param args: Action context arguments
+    :param kwargs: Action data dictionary
+    """
+
+    # The action name (that must match one of the registered modules in order to be submitted)
     name = args[0]
     log.debug('Searching for a compliant "{}" action handler...'.format(name))
 
@@ -65,18 +95,24 @@ def execute(*args, **kwargs):
         _, clz = search_module(name,
                                lambda (_, cl): issubclass(cl, Action) and cl != Action).pop()
 
-    except AttributeError:
-        raise AttributeError('Cannot handle {} requests'.format(name))
+    except EnvironmentError:
+        raise SystemError('Cannot handle {} requests'.format(name))
+    except IndexError:
+        raise ("Couldn't find an Action class inside {} module".format(name))
 
     try:
+        # Extract the request message from kwargs,
         data = kwargs.get('data', None)
         log.debug(
             'Found! Requesting an instance of {} to perform a/n {} action described as:\n{}'.format(clz, name,
                                                                                                     data))
 
+        # Create the proper action instance...
         action = clz(data)
+    except IndexError:
+        raise NameError('Action module found but class is missing: "{}"'.format(name))
+    else:
+        # and submit!
         rid = action.submit()
         if rid is not None:
             log.info('A {} request was successfully submitted with id {}'.format(name, rid))
-    except IndexError:
-        raise EnvironmentError('Action module found but class is missing: "{}"'.format(name))

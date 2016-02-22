@@ -22,18 +22,16 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
 import logging
-import traceback
-
-from redis.lock import Lock
 
 from abc import ABCMeta, abstractmethod
 from agora.client.wrapper import Agora
 from agora.stoa.actions.core import STOA, RDF
 from agora.stoa.actions.core.delivery import DeliveryRequest, DeliveryAction, DeliveryResponse, DeliverySink
 from agora.stoa.actions.core.utils import CGraph, GraphPattern
+from agora.stoa.actions.core.utils import tp_parts
 from agora.stoa.server import app
 from agora.stoa.store import r
-from rdflib import Literal
+from rdflib import Literal, URIRef
 from shortuuid import uuid
 
 __author__ = 'Fernando Serena'
@@ -54,63 +52,145 @@ else:
 
 class FragmentRequest(DeliveryRequest):
     def __init__(self):
+        """
+        Prepares the pattern graph object which will store the one that is contained in the
+        request
+        """
         super(FragmentRequest, self).__init__()
-        self.__pattern_graph = CGraph()
-        self.__pattern_graph.bind('stoa', STOA)
+        self.__request_graph = CGraph()
+        self.__request_graph.bind('stoa', STOA)
+        self.__preferred_labels = set([])
+        self.__variable_labels = {}
+        self.__graph_pattern = GraphPattern()
+
+        # Copy Agora prefixes to the pattern graph
         try:
             prefixes = agora_client.prefixes
             for p in prefixes:
-                self.__pattern_graph.bind(p, prefixes[p])
+                self.__request_graph.bind(p, prefixes[p])
         except Exception, e:
             raise EnvironmentError(e.message)
 
     def _extract_content(self):
         super(FragmentRequest, self)._extract_content()
 
+        # Firstly, it looks for all Variables that are inside the request
         variables = set(self._graph.subjects(RDF.type, STOA.Variable))
         if not variables:
             raise SyntaxError('There are no variables specified for this request')
         log.debug(
             'Found {} variables in the the fragment pattern'.format(len(variables)))
 
+        # Secondly, try to identify all links between variables (avoiding cycles)
         visited = set([])
         for v in variables:
-            self.__pattern_graph.add((v, RDF.type, STOA.Variable))
-            self._follow_variable(v, visited=visited)
+            self.__request_graph.add((v, RDF.type, STOA.Variable))
+            self.__follow_variable(v, visited=visited)
 
-        log.debug('Extracted (fragment) pattern graph:\n{}'.format(self.__pattern_graph.serialize(format='turtle')))
+        # Thirdly, the request graph is filtered and the request pattern only contains
+        # the relevant nodes and their relations
 
-    def _add_pattern_link(self, node, triple):
-        type_triple = (node, RDF.type, STOA.Variable)
-        condition = type_triple in self._graph
-        if condition:
-            self.__pattern_graph.add(type_triple)
-            if triple not in self.__pattern_graph:
-                self.__pattern_graph.add(triple)
+        # Finally, an Agora-compliant Graph Pattern is created and offered as a property
+        self.__build_graph_pattern()
+
+        log.debug('Extracted (fragment) pattern graph:\n{}'.format(self.__request_graph.serialize(format='turtle')))
+
+    def __n3(self, elm):
+        """
+        :param elm: The element to be n3-formatted
+        :return: The n3 representation of elm
+        """
+        return elm.n3(self.__request_graph.namespace_manager)
+
+    def __follow_variable(self, variable_node, visited=None):
+        """
+        Recursively follows one variable node of the request graph
+        :param variable_node: Starting node
+        :param visited: Track of visited variable nodes
+        :return:
+        """
+
+        def add_pattern_link(node, triple):
+            type_triple = (node, RDF.type, STOA.Variable)
+            condition = type_triple in self._graph
+            if condition:
+                self.__request_graph.add(type_triple)
+            elif isinstance(node, URIRef):
                 condition = True
-                log.debug('New pattern link: {}'.format(triple))
-        return condition
+            if condition:
+                if triple not in self.__request_graph:
+                    self.__request_graph.add(triple)
+                    log.debug('New pattern link: {}'.format(triple))
+            return condition
 
-    def _follow_variable(self, variable_node, visited=None):
         if visited is None:
             visited = set([])
         visited.add(variable_node)
         subject_pattern = self._graph.subject_predicates(variable_node)
         for (n, pr) in subject_pattern:
-            if self._add_pattern_link(n, (n, pr, variable_node)) and n not in visited:
-                self._follow_variable(n, visited)
+            if add_pattern_link(n, (n, pr, variable_node)) and n not in visited:
+                self.__follow_variable(n, visited)
 
         object_pattern = self._graph.predicate_objects(variable_node)
         for (pr, n) in object_pattern:
-            if self._add_pattern_link(n, (variable_node, pr, n)):
+            if add_pattern_link(n, (variable_node, pr, n)):
                 if n not in visited:
-                    self._follow_variable(n, visited)
+                    self.__follow_variable(n, visited)
             elif n != STOA.Variable:
-                self.__pattern_graph.add((variable_node, pr, n))
+                self.__request_graph.add((variable_node, pr, n))
+
+    def __build_graph_pattern(self):
+        """
+        Creates a GraphPattern with all the identified (Agora compliant) triple patterns
+        in the request graph
+        """
+
+        def preferred_label():
+            # Each variable may have a property STOA.label that specifies its desired label
+            labels = list(self.__request_graph.objects(v, STOA.label))
+            p_label = labels.pop() if len(labels) == 1 else ''
+            if p_label:
+                self.__preferred_labels.add(str(p_label))
+            return p_label if p_label.startswith('?') else '?v{}'.format(i)
+
+        # Populates a dictionary with all variables and their labels
+        variables = self.__request_graph.subjects(RDF.type, STOA.Variable)
+        for i, v in enumerate(variables):
+            self.__variable_labels[v] = preferred_label()
+
+        # For each variable, generates one triple pattern per relation with other nodes as either subject or object
+        for v in self.__variable_labels.keys():
+            v_in = self.__request_graph.subject_predicates(v)
+            for (s, pr) in v_in:
+                s_part = self.__variable_labels[s] if s in self.__variable_labels else self.__n3(s)
+                self.__graph_pattern.add(u'{} {} {}'.format(s_part, self.__n3(pr), self.__variable_labels[v]))
+            v_out = self.__request_graph.predicate_objects(v)
+            for (pr, o) in [_ for _ in v_out if _[1] != STOA.Variable and not _[0].startswith(STOA)]:
+                o_part = self.__variable_labels[o] if o in self.__variable_labels else (
+                    '"{}"'.format(o) if isinstance(o, Literal) else self.__n3(o))
+                p_part = self.__n3(pr) if pr != RDF.type else 'a'
+                self.__graph_pattern.add(u'{} {} {}'.format(self.__variable_labels[v], p_part, o_part))
 
     @property
     def pattern(self):
-        return self.__pattern_graph
+        """
+        :return: The request graph pattern
+        """
+        return self.__graph_pattern
+
+    @property
+    def preferred_labels(self):
+        """
+        :return: The variable preferred labels
+        """
+        return self.__preferred_labels
+
+    @property
+    def variable_labels(self):
+        """
+        :return: All variable labels
+        """
+        return self.__variable_labels.values()
 
 
 class FragmentAction(DeliveryAction):
@@ -119,9 +199,6 @@ class FragmentAction(DeliveryAction):
     def __init__(self, message):
         super(FragmentAction, self).__init__(message)
 
-    def submit(self):
-        super(FragmentAction, self).submit()
-
 
 class FragmentSink(DeliverySink):
     __metaclass__ = ABCMeta
@@ -129,111 +206,160 @@ class FragmentSink(DeliverySink):
     def __init__(self):
         super(FragmentSink, self).__init__()
         self._graph_pattern = GraphPattern()
-        self._variables_dict = {}
-        self._preferred_labels = []
-        self._fragment_id = None
+        self._fragment_pattern = GraphPattern()
+        self._filter_mapping = {}
+        self._preferred_labels = set([])
 
-    @staticmethod
-    def _n3(action, elm):
-        return elm.n3(action.request.pattern.namespace_manager)
-
-    def _build_graph_pattern(self, action, v_labels=None):
-        variables = set(action.request.pattern.subjects(RDF.type, STOA.Variable))
-        if v_labels is not None:
-            self._variables_dict = v_labels.copy()
-        for i, v in enumerate(variables):
-            labels = list(action.request.pattern.objects(v, STOA.label))
-            preferred_label = labels.pop() if len(labels) == 1 else ''
-            label = preferred_label if preferred_label.startswith('?') else '?v{}'.format(i)
-            self._variables_dict[v] = label
-            if preferred_label:
-                self._preferred_labels.append(str(preferred_label))
-        for v in self._variables_dict.keys():
-            v_in = action.request.pattern.subject_predicates(v)
-            for (s, pr) in v_in:
-                s_part = self._variables_dict[s] if s in self._variables_dict else self._n3(action, s)
-                self._graph_pattern.add(u'{} {} {}'.format(s_part, self._n3(action, pr), self._variables_dict[v]))
-            v_out = action.request.pattern.predicate_objects(v)
-            for (pr, o) in [_ for _ in v_out if _[1] != STOA.Variable and not _[0].startswith(STOA)]:
-                o_part = self._variables_dict[o] if o in self._variables_dict else (
-                    '"{}"'.format(o) if isinstance(o, Literal) else self._n3(action, o))
-                p_part = self._n3(action, pr) if pr != RDF.type else 'a'
-                self._graph_pattern.add(u'{} {} {}'.format(self._variables_dict[v], p_part, o_part))
-
-    def __check_gp(self):
+    def __check_gp_mappings(self, gp=None):
+        """
+        Used in _save method. Seeks matches with some fragment already registered
+        :param gp: By default, _graph_pattern attribute is used when gp is None
+        :return: The matching fragment id and the mapping dictionary or None if there is no matching
+        """
+        if gp is None:
+            gp = self._graph_pattern
         gp_keys = r.keys('fragments:*:gp')
         for gpk in gp_keys:
             stored_gp = GraphPattern(r.smembers(gpk))
-
-            mapping = stored_gp.mapping(self._graph_pattern)
+            mapping = stored_gp.mapping(gp)
             if mapping:
                 return gpk.split(':')[1], mapping
         return None
 
+    def _remove_tp_filters(self, tp):
+        """
+        Transforms a triple pattern that may contain filters to a new one with both subject and object bounded
+        to variables
+        :param tp: The triple pattern to be filtered
+        :return: Filtered triple pattern
+        """
+
+        def __create_var(elm, predicate):
+            if elm in self._filter_mapping:
+                elm = self._filter_mapping[elm]
+            elif predicate(elm):
+                v = '?{}'.format(uuid())
+                self._filter_mapping[v] = elm
+                elm = v
+            return elm
+
+        s, p, o = tp_parts(tp)
+        s = __create_var(s, lambda x: '<' in x and '>' in x)
+        o = __create_var(o, lambda x: '"' in x or ('<' in x and '>' in x))
+        return '{} {} {}'.format(s, p, o)
+
     @abstractmethod
     def _save(self, action):
+        """
+        Stores data relating to the recovery of a fragment for this request
+        """
+
         super(FragmentSink, self)._save(action)
-        self._build_graph_pattern(action)
-        fragment_mapping = self.__check_gp()
+
+        # Recover pattern from the request object
+        self._graph_pattern = action.request.pattern
+
+        # Create a filtered graph pattern from the request one (general_gp)
+        general_gp = GraphPattern()
+        for new_tp in map(lambda x: self._remove_tp_filters(x), self._graph_pattern):
+            general_gp.add(new_tp)
+        if self._filter_mapping:
+            # Store the filter mapping
+            self._pipe.hmset('{}filters'.format(self._request_key), self._filter_mapping)
+
+        # fragment_mapping is a tuple like (fragment_id, mapping)
+        fragment_mapping = self.__check_gp_mappings(gp=general_gp)
         exists = fragment_mapping is not None
         if not exists:
-            self._fragment_id = str(uuid())
-            self._pipe.sadd('fragments', self._fragment_id)
-            self._pipe.sadd('fragments:{}:gp'.format(self._fragment_id), *self._graph_pattern)
-            mapping = {str(k): str(k) for k in self._variables_dict.values()}
+            # If there is no mapping, register a new fragment collection for the general graph pattern
+            fragment_id = str(uuid())
+            self._pipe.sadd('fragments', fragment_id)
+            self._pipe.sadd('fragments:{}:gp'.format(fragment_id), *general_gp)
+            mapping = {str(k): str(k) for k in action.request.variable_labels}
         else:
-            self._fragment_id, mapping = fragment_mapping
-            if r.get('fragments:{}:on_demand'.format(self._fragment_id)) is not None:
-                self._pipe.delete('fragments:{}:sync'.format(self._fragment_id))
-        self._pipe.hset(self._request_key, 'mapping', mapping)
-        self._pipe.hset(self._request_key, 'preferred_labels', self._preferred_labels)
-        self._pipe.sadd('fragments:{}:requests'.format(self._fragment_id), self._request_id)
-        self._pipe.hset('{}'.format(self._request_key), 'fragment_id', self._fragment_id)
+            fragment_id, mapping = fragment_mapping
+            # Remove the sync state if the fragment is on-demand mode
+            if r.get('fragments:{}:on_demand'.format(fragment_id)) is not None:
+                self._pipe.delete('fragments:{}:sync'.format(fragment_id))
+
+        # Here the following is persisted: mapping, pref_labels, fragment-request links and the original graph_pattern
+        self._pipe.hmset('{}map'.format(self._request_key), mapping)
+        self._pipe.sadd('{}pl'.format(self._request_key), *action.request.preferred_labels)
+        self._pipe.sadd('fragments:{}:requests'.format(fragment_id), self._request_id)
+        self._pipe.hset('{}'.format(self._request_key), 'fragment_id', fragment_id)
+        self._pipe.sadd('{}gp'.format(self._request_key), *self._graph_pattern)
         self._pipe.hset('{}'.format(self._request_key), 'pattern', ' . '.join(self._graph_pattern))
+
+        # Populate attributes that may be required during the rest of the submission process
         self._dict_fields['mapping'] = mapping
+        self._dict_fields['preferred_labels'] = action.request.preferred_labels
+        self._dict_fields['fragment_id'] = fragment_id
+
         if not exists:
-            log.info('Request {} has started a new fragment collection: {}'.format(self._request_id, self._fragment_id))
+            log.info('Request {} has started a new fragment collection: {}'.format(self._request_id, fragment_id))
         else:
-            log.info('Request {} is going to re-use fragment {}'.format(self._request_id, self._fragment_id))
-            n_fragment_reqs = r.scard('fragments:{}:requests'.format(self._fragment_id))
-            log.info('Fragment {} is supporting {} more requests'.format(self._fragment_id, n_fragment_reqs))
+            log.info('Request {} is going to re-use fragment {}'.format(self._request_id, fragment_id))
+            n_fragment_reqs = r.scard('fragments:{}:requests'.format(fragment_id))
+            log.info('Fragment {} is supporting {} more requests'.format(fragment_id, n_fragment_reqs))
 
     @abstractmethod
     def _remove(self, pipe):
-        self._fragment_id = r.hget('{}'.format(self._request_key), 'fragment_id')
-        pipe.srem('fragments:{}:requests'.format(self._fragment_id), self._request_id)
+        """
+        Removes data relating to the recovery of a fragment for this request
+        """
+        fragment_id = r.hget('{}'.format(self._request_key), 'fragment_id')
+        pipe.srem('fragments:{}:requests'.format(fragment_id), self._request_id)
+        pipe.delete('{}gp'.format(self._request_key))
+        pipe.delete('{}map'.format(self._request_key))
+        pipe.delete('{}pl'.format(self._request_key))
+        pipe.delete('{}filters'.format(self._request_key))
         super(FragmentSink, self)._remove(pipe)
 
     @abstractmethod
     def _load(self):
+        """
+        Loads data relating to the recovery of a fragment for this request
+        """
         super(FragmentSink, self)._load()
-        self._fragment_id = self._dict_fields['fragment_id']
-        self._graph_pattern = GraphPattern(r.smembers('fragments:{}:gp'.format(self._fragment_id)))
-        mapping = self._dict_fields.get('mapping', None)
-        if mapping is not None:
-            mapping = eval(mapping)
-        self._dict_fields['mapping'] = mapping
-        preferred_labels = self._dict_fields.get('preferred_labels', None)
-        if preferred_labels is not None:
-            preferred_labels = eval(preferred_labels)
-        self._dict_fields['preferred_labels'] = preferred_labels
-        try:
-            del self._dict_fields['fragment_id']
-        except KeyError:
-            pass
+        self._graph_pattern = GraphPattern(r.smembers('{}gp'.format(self._request_key)))
+        self._fragment_pattern = GraphPattern(r.smembers('fragments:{}:gp'.format(self.fragment_id)))
+        self._filter_mapping = r.hgetall('{}filters'.format(self._request_key))
+        self._dict_fields['mapping'] = r.hgetall('{}map'.format(self._request_key))
+        self._dict_fields['preferred_labels'] = set(r.smembers('{}pl'.format(self._request_key)))
 
-    @property
-    def fragment_id(self):
-        return self._fragment_id
-
-    def map(self, v):
+    def map(self, v, fmap=False):
+        """
+        Maps a fragment variable to the corresponding variable or filter of the request
+        :param v: Fragment variable
+        :param fmap: Map to filter or not
+        :return: The mapped variable (or filter)
+        """
         if self.mapping is not None:
-            return self.mapping.get(v, v)
+            v = self.mapping.get(v, v)
+            if fmap:
+                v = self._filter_mapping.get(v, v)
         return v
 
     @property
     def gp(self):
+        """
+        :return: The request Graph Pattern
+        """
         return self._graph_pattern
+
+    @property
+    def fragment_gp(self):
+        """
+        :return: The Graph Pattern of the supporting fragment
+        """
+        return self._fragment_pattern
+
+    @property
+    def filter_mapping(self):
+        """
+        :return: The mapping dictionary between original filters and on-the-fly created variables
+        """
+        return self._filter_mapping
 
 
 class FragmentResponse(DeliveryResponse):

@@ -22,8 +22,9 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
 
-from setuptools import setup, find_packages
 import json
+
+from setuptools import setup, find_packages
 
 __author__ = 'Fernando Serena'
 

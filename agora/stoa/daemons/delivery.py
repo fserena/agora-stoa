@@ -25,16 +25,19 @@ import logging
 import traceback
 from threading import Thread
 
-from concurrent.futures.thread import ThreadPoolExecutor
 from agora.stoa.messaging.reply import reply
 from agora.stoa.server import app
 from agora.stoa.store import r
+from concurrent.futures.thread import ThreadPoolExecutor
 
 __author__ = 'Fernando Serena'
 
+log = logging.getLogger('agora.stoa.daemons.delivery')
+
+# Load environment variables
 MAX_CONCURRENT_DELIVERIES = int(app.config.get('PARAMS', {}).get('max_concurrent_deliveries', 8))
 
-log = logging.getLogger('agora.stoa.daemons.delivery')
+# Delivery thread pool
 thp = ThreadPoolExecutor(max_workers=min(8, MAX_CONCURRENT_DELIVERIES))
 
 log.info("""Delivery daemon setup:
@@ -42,8 +45,13 @@ log.info("""Delivery daemon setup:
 
 
 def build_response(rid):
+    """
+    Creates a response instance for a given request id
+    :param rid: Request identifier
+    :return: The response object
+    """
     from agora.stoa.actions import get_instance
-    response_class = r.hget('requests:{}'.format(rid), '__response_class')
+    response_class = r.hget('requests:{}:'.format(rid), '__response_class')
     if response_class is None:
         raise AttributeError('Cannot create a response for {}'.format(rid))
     (module_name, class_name) = tuple(response_class.split('.'))
@@ -51,6 +59,15 @@ def build_response(rid):
 
 
 def __deliver_response(rid):
+    """
+    The delivery task for a given request id
+    :param rid: Request id
+    """
+
+    def deliver_message():
+        reply(message, headers=headers, **response.sink.recipient)
+        return len(str(message))
+
     response = None
     try:
         response = build_response(rid)
@@ -59,17 +76,20 @@ def __deliver_response(rid):
             messages = response.build()
             # The creation of a response object may change the corresponding request delivery state
             # (mixing, streaming, etc). The thing is that it was 'ready' before,
-            # so it should be something prepared to deliver.
+            # so it should has something prepared to deliver.
+            n_messages = 0
+            deliver_weight = 0
+
             message, headers = messages.next()  # Actually, this is the trigger
-            reply(message, headers=headers, **response.sink.recipient)
-            n_messages = 1
-            deliver_weight = len(str(message))
-            deliver_delta = deliver_weight
+            deliver_weight += deliver_message()
+            n_messages += 1
+
+            deliver_delta = 0
             for (message, headers) in messages:
-                reply(message, headers=headers, **response.sink.recipient)
+                message_weight = deliver_message()
+                deliver_weight += message_weight
+                deliver_delta += message_weight
                 n_messages += 1
-                deliver_weight += len(str(message))
-                deliver_delta += deliver_weight
                 if deliver_delta > 1000:
                     deliver_delta = 0
                     log.info('Delivering response of request {} [{} kB]'.format(rid, deliver_weight / 1000.0))
@@ -82,8 +102,8 @@ def __deliver_response(rid):
         else:
             log.info('Response of request {} is being delivered by other means...'.format(rid))
             r.srem('deliveries:ready', rid)
-    except StopIteration:   # There was nothing prepared to deliver (Its state may have changed to
-                            # 'streaming')
+    except StopIteration:  # There was nothing prepared to deliver (Its state may have changed to
+        # 'streaming')
         r.srem('deliveries:ready', rid)
     except (EnvironmentError, AttributeError, Exception), e:
         r.srem('deliveries:ready', rid)
@@ -98,26 +118,25 @@ def __deliver_response(rid):
 
 def __deliver_responses():
     import time
-
-    registered_deliveries = r.scard('deliveries')
-    deliveries_ready = r.scard('deliveries:ready')
-    log.info("""Delivery daemon started:
-                    - Deliveries: {}
-                    - Ready: {}""".format(registered_deliveries, deliveries_ready))
-
     log.info('Delivery daemon started')
+
+    # Declare in-progress deliveries dictionary
     futures = {}
     while True:
+        # Get all ready deliveries
         ready = r.smembers('deliveries:ready')
         for rid in ready:
+            # If the delivery is not in the thread pool, just submit it
             if rid not in futures:
-                log.info('Response delivery of request {} is ready. Preparing...'.format(rid))
+                log.info('Response delivery of request {} is ready. Putting it in queue...'.format(rid))
                 futures[rid] = thp.submit(__deliver_response, rid)
 
+        # Clear futures that have already ceased to be ready
         for obsolete_rid in set.difference(set(futures.keys()), ready):
             if obsolete_rid in futures and futures[obsolete_rid].done():
                 del futures[obsolete_rid]
 
+        # All those deliveries that are marked as 'sent' are being cleared here along its request data
         sent = r.smembers('deliveries:sent')
         for rid in sent:
             r.srem('deliveries:ready', rid)
@@ -129,11 +148,19 @@ def __deliver_responses():
             except AttributeError:
                 log.warning('Request number {} was deleted by other means'.format(rid))
                 pass
+            r.srem('deliveries:sent', rid)
 
-        r.delete('deliveries:sent')
         time.sleep(1)
 
 
+# Log delivery counters at startup
+registered_deliveries = r.scard('deliveries')
+deliveries_ready = r.scard('deliveries:ready')
+log.info("""Delivery daemon started:
+                - Deliveries: {}
+                - Ready: {}""".format(registered_deliveries, deliveries_ready))
+
+# Create and start delivery daemon
 __thread = Thread(target=__deliver_responses)
 __thread.daemon = True
 __thread.start()

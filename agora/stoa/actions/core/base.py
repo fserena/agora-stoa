@@ -36,26 +36,21 @@ __author__ = 'Fernando Serena'
 log = logging.getLogger('agora.stoa.actions.base')
 
 
-def _fullname(f):
-    def wrapper():
-        clz = f()
-        parts = clz.__module__.split('.')
-        if parts:
-            module_name = parts[-1]
-            return '{}.{}'.format(module_name, clz.__name__)
-        raise AttributeError('Invalid response class: {}'.format(clz))
-
-    return wrapper
-
-
 class Action(object):
+    """
+    Generic action class that supports requests to Stoas
+    """
     __metaclass__ = ABCMeta
 
     def __init__(self, message):
+        """
+        Base constructor
+        :param message: the incoming request (RDF)
+        :return:
+        """
         self.__message = message
         self.__action_id = None
         self.__request_id = None
-        self.__request_key = None
 
     @abstractproperty
     def request(self):
@@ -63,26 +58,40 @@ class Action(object):
 
     @classmethod
     def response_class(cls):
+        """
+        This method should be implemented on each final Action class
+        :return: The response class
+        """
         pass
 
     @abstractproperty
     def sink(self):
+        """
+        :return: The sink instance
+        """
         pass
 
     @property
     def request_id(self):
+        """
+        Every action is assigned a unique request id.
+        """
         return self.__request_id
 
     @property
     def id(self):
+        """
+        In order to uniquely identify action requests, each incoming one produces an action id based on
+        the message id and the submitter id.
+        """
         return self.__action_id
-
-    @property
-    def request_key(self):
-        return self.__request_key
 
     @abstractmethod
     def submit(self):
+        """
+        Base method that parses and saves the request message
+        :return: The new request id
+        """
         if not issubclass(self.response_class(), Response):
             raise SystemError(
                 'The response class for this action is invalid: {}'.format(self.response_class()))
@@ -94,6 +103,9 @@ class Action(object):
 
 
 class Sink(object):
+    """
+     Every action should have a sink that deals with Action persistency.
+    """
     __metaclass__ = ABCMeta
 
     def __init__(self):
@@ -103,28 +115,59 @@ class Sink(object):
         self._dict_fields = {}
 
     def load(self, rid):
-        if not r.keys('requests:{}'.format(rid)):
+        """
+        Checks the given request id and loads its associated data
+        """
+
+        if not r.keys('requests:{}:'.format(rid)):
             raise ValueError('Cannot load request: Unknown request id {}'.format(rid))
         self._request_id = rid
-        self._request_key = 'requests:{}'.format(self._request_id)
+        self._request_key = 'requests:{}:'.format(self._request_id)
         self._load()
+
+    @staticmethod
+    def __response_fullname(f):
+        """
+        The response class name has to to be stored so as to be instanced on load
+        :return: A string like <module>.<Response> based on the given response class function provider (f)
+        """
+
+        def wrapper():
+            clz = f()
+            parts = clz.__module__.split('.')
+            if parts:
+                module_name = parts[-1]
+                return '{}.{}'.format(module_name, clz.__name__)
+            raise NameError('Invalid response class: {}'.format(clz))
+
+        return wrapper
 
     @abstractmethod
     def _load(self):
-        self._dict_fields = r.hgetall('requests:{}'.format(self._request_id))
+        """
+        Sink-specific load statements (to be extended)
+        :return:
+        """
+        self._dict_fields = r.hgetall('requests:{}:'.format(self._request_id))
 
     def __getattr__(self, item):
         if item in self._dict_fields:
             value = self._dict_fields[item]
             if value == 'True' or value == 'False':
-                return eval(value)
+                value = eval(value)
             return value
         return super(Sink, self).__getattribute__(item)
 
     def save(self, action):
+        """
+        Generates a new request id and stores all action data
+        :return: The new request id
+        """
         self._request_id = str(uuid())
         self._pipe.multi()
         self._save(action)
+        # It is not until this point when the pipe is executed!
+        # If it fails, nothing is stored
         self._pipe.execute()
         log.info("""Request {} was saved:
                     -message id: {}
@@ -134,6 +177,10 @@ class Sink(object):
         return self._request_id
 
     def remove(self):
+        """
+        Creates a pipe to remove all stored data of the current request
+        """
+        # All dict_fields are being removed automatically here (hashmap request attributes)
         with r.pipeline(transaction=True) as p:
             p.multi()
             action_id = r.hget(self._request_key, 'id')
@@ -147,20 +194,32 @@ class Sink(object):
 
     @abstractmethod
     def _remove(self, pipe):
+        """
+        Sink-specific remove statements (to be extended)
+        :param pipe: The pipe to be used on remove statements
+        """
         pass
 
     @abstractmethod
     def _save(self, action):
+        """
+        Sink-specific save statements (to be extended)
+        :param action: The action that contains the data to be stored
+        """
+        # Firstly, we have to check if the action was previously stored...
         if r.zscore('requests', action.id):
             raise ValueError('Duplicated request: {}'.format(action.id))
         submitted_by_ts = calendar.timegm(action.request.submitted_on.timetuple())
+
+        # The action id is stored in a sorted set using its timestamp as score
         self._pipe.zadd('requests', submitted_by_ts, action.id)
-        self._request_key = 'requests:{}'.format(self._request_id)
+        self._request_key = 'requests:{}:'.format(self._request_id)
+        # Basic request data is stored on a dictionary (hashmap)
         self._pipe.hmset(self._request_key, {'submitted_by': action.request.submitted_by,
                                              'submitted_on': action.request.submitted_on,
                                              'message_id': action.request.message_id,
                                              'id': self._request_id,
-                                             '__response_class': _fullname(action.response_class)(),
+                                             '__response_class': self.__response_fullname(action.response_class)(),
                                              'type': action.__class__.__module__,
                                              '__hash': action.id})
 
@@ -170,15 +229,26 @@ class Sink(object):
 
 
 class Request(object):
+    """
+    The generic class that knows how to parse action messages and supports specific action requests
+    """
+
     def __init__(self):
         from agora.stoa.actions.core import STOA, AMQP
+        # Since the message is RDF, we create a graph to store and query its triples
         self._graph = CGraph()
         self._graph.bind('stoa', STOA)
         self._graph.bind('amqp', AMQP)
         self._request_node = None
+
+        # Base fields dictionary
         self._fields = {}
 
     def parse(self, message):
+        """
+        Parses the message and extracts all useful content
+        :param message: The request message (RDF)
+        """
         log.debug('Parsing message...')
         try:
             self._graph.parse(StringIO.StringIO(message), format='turtle')
@@ -189,6 +259,9 @@ class Request(object):
 
     @abstractmethod
     def _extract_content(self):
+        """
+        Request-specific method to query the message graph and extract key content
+        """
         q_res = self._graph.query("""SELECT ?node ?m ?d ?a WHERE {
                                         ?node stoa:messageId ?m;
                                               stoa:submittedOn ?d;
@@ -203,7 +276,7 @@ class Request(object):
         request_fields = q_res.pop()
 
         if not all(request_fields):
-            raise ValueError('Missing fields for generic request')
+            raise SyntaxError('Missing fields for generic request')
 
         (self._request_node, self._fields['message_id'],
          self._fields['submitted_on'],
@@ -229,16 +302,25 @@ class Request(object):
 
 
 class Response(object):
+    """
+    Every request should have a response.
+    """
+
     __metaclass__ = ABCMeta
 
     def __init__(self, rid):
         self._request_id = rid
-        self._request_key = 'requests:{}'.format(rid)
 
     @abstractmethod
     def build(self):
+        """
+        :return: A generator that provides the response
+        """
         pass
 
     @abstractproperty
     def sink(self):
+        """
+        :return: The associated request sink
+        """
         pass

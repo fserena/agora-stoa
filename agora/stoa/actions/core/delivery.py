@@ -23,16 +23,18 @@
 """
 import base64
 import logging
+import traceback
 import uuid
-from abc import ABCMeta, abstractmethod, abstractproperty
+
 from datetime import datetime
 
+from abc import ABCMeta, abstractmethod
 from agora.stoa.actions.core import RDF, STOA, FOAF, TYPES, XSD
 from agora.stoa.actions.core.base import Request, Action, Response, Sink
 from agora.stoa.actions.core.utils import CGraph
 from agora.stoa.messaging.reply import reply
-from agora.stoa.store import r
 from agora.stoa.server import app
+from agora.stoa.store import r
 from rdflib import BNode, Literal, RDFS
 
 __author__ = 'Fernando Serena'
@@ -44,6 +46,9 @@ AGENT_UUID = Literal(str(uuid.uuid4()), datatype=TYPES.UUID)
 
 
 def _build_reply_templates():
+    """
+    :return: Accept and Failure message templates
+    """
     accepted = CGraph()
     failure = CGraph()
     response_node = BNode()
@@ -69,6 +74,12 @@ def _build_reply_templates():
 
 
 def build_reply(template, reply_to, comment=None):
+    """
+    :param template: A specific message template graph
+    :param reply_to: Recipient Agent UUID
+    :param comment: Optional comment
+    :return: The reply graph
+    """
     reply_graph = CGraph()
     root_node = None
     for (s, p, o) in template:
@@ -85,6 +96,7 @@ def build_reply(template, reply_to, comment=None):
     return reply_graph
 
 
+# Create both accept and failure templates
 accepted_template, failure_template = _build_reply_templates()
 log.info('Basic delivery templates created')
 
@@ -94,6 +106,9 @@ class DeliveryRequest(Request):
         super(DeliveryRequest, self).__init__()
 
     def _extract_content(self):
+        """
+        Extracts delivery related data from message (delivery channel to reply to)
+        """
         super(DeliveryRequest, self)._extract_content()
 
         q_res = self._graph.query("""SELECT ?node ?ex ?rk ?h ?p ?v WHERE {
@@ -116,7 +131,7 @@ class DeliveryRequest(Request):
         request_fields = q_res.pop()
 
         if not any(request_fields):
-            raise ValueError('Missing fields for delivery request')
+            raise SyntaxError('Missing fields for delivery request')
 
         if request_fields[0] != self._request_node:
             raise SyntaxError('Request node does not match')
@@ -138,10 +153,14 @@ class DeliveryRequest(Request):
             delivery_data['routing_key'],
             delivery_data['host'], delivery_data['port'], delivery_data['vhost']))
 
+        # Copy delivery data dictionary to the base request fields attribute
         self._fields['delivery'] = delivery_data.copy()
 
     @property
     def broker(self):
+        """
+        :return: Broker to which response must be addressed
+        """
         broker_dict = {k: self._fields['delivery'][k].toPython() for k in ('host', 'port', 'vhost') if
                        k in self._fields['delivery']}
         broker_dict['port'] = int(broker_dict['port'])
@@ -149,11 +168,17 @@ class DeliveryRequest(Request):
 
     @property
     def channel(self):
+        """
+        :return: Delivery channel attributes
+        """
         return {k: self._fields['delivery'][k].toPython() for k in ('exchange', 'routing_key') if
                 k in self._fields['delivery']}
 
     @property
     def recipient(self):
+        """
+        :return: Broker and delivery channel data
+        """
         recipient = self.broker.copy()
         recipient.update(self.channel)
         return recipient
@@ -165,53 +190,80 @@ class DeliveryAction(Action):
     def __init__(self, message):
         super(DeliveryAction, self).__init__(message)
 
+    def __reply(self, template, reason=None):
+        """
+        Sends a protocol reply message to the submitter
+        """
+        graph = build_reply(template, self.request.message_id, reason)
+        reply(graph.serialize(format='turtle'), exchange=exchange,
+              routing_key='stoa.response.{}'.format(self.request.submitted_by),
+              **self.request.broker)
+
     def __reply_accepted(self):
+        """
+        Sends an Accept message to the submitter
+        """
         try:
-            graph = build_reply(accepted_template, self.request.message_id)
-            reply(graph.serialize(format='turtle'), exchange=exchange,
-                  routing_key='stoa.response.{}'.format(self.request.submitted_by),
-                  **self.request.broker)
-            if self.sink.delivery is None:
-                self.sink.delivery = 'accepted'
-            log.info('Request {} was accepted'.format(self.request_id))
-        except KeyError:
-            pass
-        except IOError, e:
-            log.warning(e.message)
+            self.__reply(accepted_template)
+        except Exception:
+            # KeyError: Delivery channel data may be invalid
+            # IOError: If the acceptance couldn't be sent, propagate the exception
+            raise
 
     def _reply_failure(self, reason=None):
+        """
+        Sends a Failure message to the submitter
+        """
         try:
-            graph = build_reply(failure_template, self.request.message_id, reason)
-            reply(graph.serialize(format='turtle'), exchange=exchange,
-                  routing_key='stoa.response.{}'.format(self.request.submitted_by),
-                  **self.request.broker)
+            self.__reply(failure_template, reason)
             log.info('Notified failure of request {} due to: {}'.format(self.request_id, reason))
-        except KeyError:
-            # Delivery channel data may be invalid
-            pass
-        except IOError, e:
-            log.warning(e.message)
+        except Exception, e:
+            # KeyError: Delivery channel data may be invalid
+            # IOError: In this case, if even the failure message couldn't be sent, we cannot do anymore :)
+            log.warning('Sending failure message for request {}: {}'.format(self.request_id, e.message))
 
     def submit(self):
-        super(DeliveryAction, self).submit()
+        """
+        Submit and try to send an acceptance message to the submitter if everything is ok
+        """
         try:
-            self.__reply_accepted()
-        except Exception, e:
-            log.warning(e.message)
-            self.sink.remove()
+            super(DeliveryAction, self).submit()
+        except SyntaxError, e:
+            # If the message is of bad format, reply notifying the issue
+            self._reply_failure(e.message)
+            raise
+        else:
+            try:
+                self.__reply_accepted()
+            except Exception, e:
+                log.warning('Acceptance of request {} failed due to: {}'.format(self.request_id, e.message))
+                # If the acceptance message couldn't be sent, remove the request and propagate the error
+                self.sink.remove()
+                raise
+
+            # If everything was ok, update the request delivery state
+            if self.sink.delivery is None:
+                self.sink.delivery = 'accepted'
 
 
 def used_channels():
-    req_channel_keys = r.keys('requests:*')
+    """
+    Selects all channels that were declared by current requests
+    """
+    req_channel_keys = r.keys('requests:*:')
     for rck in req_channel_keys:
         try:
             channel = r.hget(rck, 'channel')
             yield channel
         except Exception as e:
+            traceback.print_exc()
             log.warning(e.message)
 
 
 def channel_sharing(channel_b64):
+    """
+    Calculates how many channel identifiers match the given one (channel_b64)
+    """
     return len(list(filter(lambda x: x == channel_b64, used_channels()))) - 1  # Don't count itself
 
 
@@ -220,6 +272,9 @@ class DeliverySink(Sink):
 
     @abstractmethod
     def _save(self, action):
+        """
+        Stores delivery channel data
+        """
         super(DeliverySink, self)._save(action)
         self._pipe.sadd('deliveries', self._request_id)
         broker_b64 = base64.b64encode('|'.join(map(lambda x: str(x), action.request.broker.values())))
@@ -231,6 +286,9 @@ class DeliverySink(Sink):
 
     @abstractmethod
     def _load(self):
+        """
+        Loads all delivery data
+        """
         super(DeliverySink, self)._load()
         self._dict_fields['channel'] = r.hgetall('channels:{}'.format(self._dict_fields['channel']))
         self._dict_fields['broker'] = r.hgetall('brokers:{}'.format(self._dict_fields['broker']))
@@ -238,6 +296,9 @@ class DeliverySink(Sink):
         recipient = self._dict_fields['channel'].copy()
         recipient.update(self._dict_fields['broker'])
         self._dict_fields['recipient'] = recipient
+
+        # If present, remove previously stored delivery state so it can be retrieved each time the delivery getter
+        # is invoked
         try:
             del self._dict_fields['delivery']
         except KeyError:
@@ -245,9 +306,11 @@ class DeliverySink(Sink):
 
     @abstractmethod
     def _remove(self, pipe):
-        super(DeliverySink, self)._remove(pipe)
-        pipe.srem('deliveries', self._request_id)
-        pipe.srem('deliveries:ready', self._request_id)
+        """
+        Remove all delivery data
+        """
+
+        # If this request is the only one that's using such channel, it is removed
         channel_b64 = r.hget(self._request_key, 'channel')
         sharing = channel_sharing(channel_b64)
         if not sharing:
@@ -257,12 +320,21 @@ class DeliverySink(Sink):
             log.info('Cannot remove delivery channel of request {}. It is being shared with {} another requests'.format(
                 self.request_id, sharing))
 
+        super(DeliverySink, self)._remove(pipe)
+
+        pipe.srem('deliveries', self._request_id)
+        pipe.srem('deliveries:ready', self._request_id)
+
     @property
     def delivery(self):
-        return r.hget('requests:{}'.format(self._request_id), 'delivery')
+        return r.hget('{}'.format(self._request_key), 'delivery')
 
     @delivery.setter
     def delivery(self, value):
+        """
+        Changes the delivery state of the request
+        :param value: 'ready', 'sent', 'accepted', ...
+        """
         with r.pipeline(transaction=True) as p:
             p.multi()
             if value == 'ready':
@@ -271,7 +343,7 @@ class DeliverySink(Sink):
                 p.sadd('deliveries:sent', self._request_id)
             if value != 'ready':
                 p.srem('deliveries:ready', self._request_id)
-            p.hset('requests:{}'.format(self._request_id), 'delivery', value)
+            p.hset('{}'.format(self._request_key), 'delivery', value)
             p.execute()
         log.info('Request {} delivery state is now "{}"'.format(self._request_id, value))
 

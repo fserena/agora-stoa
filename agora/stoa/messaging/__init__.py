@@ -26,13 +26,16 @@ import logging
 from threading import Thread
 
 import pika
+from pika.exceptions import ConnectionClosed
+
 from agora.stoa.actions import execute
 from agora.stoa.server import app
-from pika.exceptions import ConnectionClosed
 
 __author__ = 'Fernando Serena'
 
 log = logging.getLogger('agora.stoa.messaging')
+
+# Load environment variables
 BROKER_CONFIG = app.config['BROKER']
 EXCHANGE_CONFIG = app.config['EXCHANGE']
 
@@ -53,17 +56,26 @@ def callback(ch, method, properties, body):
     log.info('--> Incoming {} request!'.format(action_args[0]))
     try:
         execute(*action_args, data=body)
-    except (EnvironmentError, AttributeError, ValueError) as e:
-        # traceback.print_exc()
+    except (NameError, SystemError) as e:
         log.error(e.message)
         ch.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
         log.debug('Sent REJECT')
+    except IOError as e:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        log.error('There was a messaging problem with a request: {}'.format(e.message))
+    except Exception as e:
+        # EnvironmentError, such as 'Agora is not available' will be caught here...
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        log.error(e.message)
     else:
         ch.basic_ack(delivery_tag=method.delivery_tag)
         log.debug('Sent ACK')
 
 
 def __setup_queues():
+    """
+    Establish the Stoa messaging system
+    """
     try:
         connection = pika.BlockingConnection(pika.ConnectionParameters(
             host=BROKER_CONFIG['host']))
@@ -94,6 +106,7 @@ def __setup_queues():
                 log.error('Messaging system failed due to: {}'.format(e.message))
 
 
+# Create and start delivery daemon
 th = Thread(target=__setup_queues)
 th.daemon = True
 th.start()
