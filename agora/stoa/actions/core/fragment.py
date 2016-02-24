@@ -71,8 +71,8 @@ class FragmentRequest(DeliveryRequest):
         except Exception, e:
             raise EnvironmentError(e.message)
 
-    def _extract_content(self):
-        super(FragmentRequest, self)._extract_content()
+    def _extract_content(self, request_type=None):
+        super(FragmentRequest, self)._extract_content(request_type)
 
         # Firstly, it looks for all Variables that are inside the request
         variables = set(self._graph.subjects(RDF.type, STOA.Variable))

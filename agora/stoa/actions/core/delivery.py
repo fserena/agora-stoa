@@ -105,11 +105,11 @@ class DeliveryRequest(Request):
     def __init__(self):
         super(DeliveryRequest, self).__init__()
 
-    def _extract_content(self):
+    def _extract_content(self, request_type=None):
         """
         Extracts delivery related data from message (delivery channel to reply to)
         """
-        super(DeliveryRequest, self)._extract_content()
+        super(DeliveryRequest, self)._extract_content(request_type)
 
         q_res = self._graph.query("""SELECT ?node ?ex ?rk ?h ?p ?v WHERE {
                                   ?node stoa:replyTo [

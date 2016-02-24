@@ -29,6 +29,7 @@ import logging
 from abc import abstractproperty, abstractmethod, ABCMeta
 from agora.stoa.actions.core.utils import CGraph
 from agora.stoa.store import r
+from rdflib import RDF
 from shortuuid import uuid
 
 __author__ = 'Fernando Serena'
@@ -258,7 +259,7 @@ class Request(object):
         self._extract_content()
 
     @abstractmethod
-    def _extract_content(self):
+    def _extract_content(self, request_type=None):
         """
         Request-specific method to query the message graph and extract key content
         """
@@ -281,6 +282,12 @@ class Request(object):
         (self._request_node, self._fields['message_id'],
          self._fields['submitted_on'],
          self._fields['submitted_by']) = request_fields
+
+        if request_type is not None:
+            request_types = set(self._graph.objects(self._request_node, RDF.type))
+            if len(request_types) != 1 or request_type not in request_types:
+                raise SyntaxError('Invalid request type declaration')
+
         log.debug(
             """Parsed attributes of generic action request:
                 -message id: {}
