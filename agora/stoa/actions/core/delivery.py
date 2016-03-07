@@ -41,6 +41,7 @@ __author__ = 'Fernando Serena'
 
 EXCHANGE_CONFIG = app.config['EXCHANGE']
 exchange = EXCHANGE_CONFIG['exchange']
+response_rk = EXCHANGE_CONFIG['response_rk']
 log = logging.getLogger('agora.stoa.actions.delivery')
 AGENT_UUID = Literal(str(uuid.uuid4()), datatype=TYPES.UUID)
 
@@ -53,10 +54,10 @@ def _build_reply_templates():
     failure = CGraph()
     response_node = BNode()
     agent_node = BNode()
+    accepted.add((response_node, RDF.type, STOA.Root))
     accepted.add((response_node, RDF.type, STOA.Accepted))
     accepted.add((agent_node, RDF.type, FOAF.Agent))
     accepted.add((response_node, STOA.responseNumber, Literal("0", datatype=XSD.unsignedLong)))
-    accepted.add((response_node, STOA.submittedBy, agent_node))
     accepted.add((response_node, STOA.submittedBy, agent_node))
     accepted.add(
         (agent_node, STOA.agentId, AGENT_UUID))
@@ -83,9 +84,11 @@ def build_reply(template, reply_to, comment=None):
     reply_graph = CGraph()
     root_node = None
     for (s, p, o) in template:
-        reply_graph.add((s, p, o))
-        if p == RDF.type:
+        if o == STOA.Root:
             root_node = s
+        else:
+            reply_graph.add((s, p, o))
+
     reply_graph.add((root_node, STOA.responseTo, Literal(reply_to, datatype=TYPES.UUID)))
     reply_graph.set((root_node, STOA.submittedOn, Literal(datetime.now())))
     reply_graph.set((root_node, STOA.messageId, Literal(str(uuid.uuid4()), datatype=TYPES.UUID)))
@@ -196,7 +199,7 @@ class DeliveryAction(Action):
         """
         graph = build_reply(template, self.request.message_id, reason)
         reply(graph.serialize(format='turtle'), exchange=exchange,
-              routing_key='stoa.response.{}'.format(self.request.submitted_by),
+              routing_key='{}.{}'.format(response_rk, self.request.submitted_by),
               **self.request.broker)
 
     def __reply_accepted(self):
