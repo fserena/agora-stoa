@@ -49,10 +49,12 @@ def _broker_conf(def_host, def_port):
             'port': int(os.environ.get('AMQP_PORT', def_port))}
 
 
-def _exchange_conf(def_exchange, def_queue):
+def _exchange_conf(def_exchange, def_queue, def_tp, def_response_rk):
     return {
         'exchange': os.environ.get('EXCHANGE_NAME', def_exchange),
-        'queue': os.environ.get('QUEUE_NAME', def_queue)
+        'queue': os.environ.get('QUEUE_NAME', def_queue),
+        'topic_pattern': os.environ.get('TOPIC_PATTERN', def_tp),
+        'response_rk': os.environ.get('RESPONSE_RK_PREFIX', def_response_rk)
     }
 
 
@@ -65,7 +67,7 @@ class Config(object):
     REDIS = _redis_conf('localhost', 4, 6379)
     AGORA = _agora_conf('localhost', 9002)
     BROKER = _broker_conf('localhost', 5672)
-    EXCHANGE = _exchange_conf('stoa', 'stoa_requests')
+    EXCHANGE = _exchange_conf('stoa', 'stoa_requests', 'stoa.request.*', 'stoa.response')
 
 
 class DevelopmentConfig(Config):

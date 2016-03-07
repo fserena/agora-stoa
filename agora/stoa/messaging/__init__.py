@@ -26,7 +26,7 @@ import logging
 from threading import Thread
 
 import pika
-from pika.exceptions import ConnectionClosed
+import time
 
 from agora.stoa.actions import execute
 from agora.stoa.server import app
@@ -41,14 +41,18 @@ EXCHANGE_CONFIG = app.config['EXCHANGE']
 
 exchange = EXCHANGE_CONFIG['exchange']
 queue = EXCHANGE_CONFIG['queue']
+topic_pattern = EXCHANGE_CONFIG['topic_pattern']
+response_prefix = EXCHANGE_CONFIG['response_rk_prefix']
 
 log.info("""Broker setup:
                 - host: {}
                 - port: {}
                 - exchange: {}
-                - queue: {}""".format(BROKER_CONFIG['host'],
-                                      BROKER_CONFIG['port'],
-                                      exchange, queue))
+                - queue: {}
+                - topic pattern: {}
+                - response prefix: {}""".format(BROKER_CONFIG['host'],
+                                                BROKER_CONFIG['port'],
+                                                exchange, queue, topic_pattern, response_prefix))
 
 
 def callback(ch, method, properties, body):
@@ -76,34 +80,36 @@ def __setup_queues():
     """
     Establish the Stoa messaging system
     """
-    try:
-        connection = pika.BlockingConnection(pika.ConnectionParameters(
-            host=BROKER_CONFIG['host']))
-    except ConnectionClosed:
-        log.error('AMQP broker is not available')
-    else:
-        channel = connection.channel()
-        log.info('Connected to the AMQP broker: {}'.format(BROKER_CONFIG))
+    while True:
 
-        log.info('Declaring exchange "{}"...'.format(exchange))
-        channel.exchange_declare(exchange=exchange,
-                                 type='topic', durable=True)
+        try:
+            connection = pika.BlockingConnection(pika.ConnectionParameters(
+                host=BROKER_CONFIG['host']))
+        except Exception, e:
+            log.error('AMQP broker is not available: {}'.format(e.message))
+        else:
+            channel = connection.channel()
+            log.info('Connected to the AMQP broker: {}'.format(BROKER_CONFIG))
 
-        # Create the requests queue and binding
-        channel.queue_declare(queue, durable=True)
-        log.info('Declaring queue "{}"...'.format(queue))
-        topic_pattern = 'stoa.request.*'
-        channel.queue_bind(exchange=exchange, queue=queue, routing_key=topic_pattern)
-        log.info('Binding to topic "{}"...'.format(topic_pattern))
-        channel.basic_qos(prefetch_count=1)
-        channel.basic_consume(callback, queue=queue)
+            log.info('Declaring exchange "{}"...'.format(exchange))
+            channel.exchange_declare(exchange=exchange,
+                                     type='topic', durable=True)
 
-        log.info('Ready to accept requests')
-        while True:
+            # Create the requests queue and binding
+            channel.queue_declare(queue, durable=True)
+            log.info('Declaring queue "{}"...'.format(queue))
+            channel.queue_bind(exchange=exchange, queue=queue, routing_key=topic_pattern)
+            log.info('Binding to topic "{}"...'.format(topic_pattern))
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(callback, queue=queue)
+
+            log.info('Ready to accept requests')
             try:
                 channel.start_consuming()
             except Exception, e:
                 log.error('Messaging system failed due to: {}'.format(e.message))
+
+        time.sleep(1)
 
 
 # Create and start delivery daemon
