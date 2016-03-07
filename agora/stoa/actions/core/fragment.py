@@ -61,7 +61,7 @@ class FragmentRequest(DeliveryRequest):
         self.__request_graph.bind('stoa', STOA)
         self.__preferred_labels = set([])
         self.__variable_labels = {}
-        self.__graph_pattern = GraphPattern()
+        self._graph_pattern = GraphPattern()
 
         # Copy Agora prefixes to the pattern graph
         try:
@@ -163,20 +163,20 @@ class FragmentRequest(DeliveryRequest):
             v_in = self.__request_graph.subject_predicates(v)
             for (s, pr) in v_in:
                 s_part = self.__variable_labels[s] if s in self.__variable_labels else self.__n3(s)
-                self.__graph_pattern.add(u'{} {} {}'.format(s_part, self.__n3(pr), self.__variable_labels[v]))
+                self._graph_pattern.add(u'{} {} {}'.format(s_part, self.__n3(pr), self.__variable_labels[v]))
             v_out = self.__request_graph.predicate_objects(v)
             for (pr, o) in [_ for _ in v_out if _[1] != STOA.Variable and not _[0].startswith(STOA)]:
                 o_part = self.__variable_labels[o] if o in self.__variable_labels else (
                     '"{}"'.format(o) if isinstance(o, Literal) else self.__n3(o))
                 p_part = self.__n3(pr) if pr != RDF.type else 'a'
-                self.__graph_pattern.add(u'{} {} {}'.format(self.__variable_labels[v], p_part, o_part))
+                self._graph_pattern.add(u'{} {} {}'.format(self.__variable_labels[v], p_part, o_part))
 
     @property
     def pattern(self):
         """
         :return: The request graph pattern
         """
-        return self.__graph_pattern
+        return self._graph_pattern
 
     @property
     def preferred_labels(self):
@@ -191,6 +191,12 @@ class FragmentRequest(DeliveryRequest):
         :return: All variable labels
         """
         return self.__variable_labels.values()
+
+    def variable_label(self, n):
+        label = self.__variable_labels.get(n, None)
+        if isinstance(label, Literal):
+            label = label.toPython()
+        return label
 
 
 class FragmentAction(DeliveryAction):
@@ -235,8 +241,8 @@ class FragmentSink(DeliverySink):
         """
 
         def __create_var(elm, predicate):
-            if elm in self._filter_mapping:
-                elm = self._filter_mapping[elm]
+            if elm in self._filter_mapping.values():
+                elm = list(filter(lambda x: self._filter_mapping[x] == elm, self._filter_mapping)).pop()
             elif predicate(elm):
                 v = '?{}'.format(uuid())
                 self._filter_mapping[v] = elm
@@ -248,8 +254,18 @@ class FragmentSink(DeliverySink):
         o = __create_var(o, lambda x: '"' in x or ('<' in x and '>' in x))
         return '{} {} {}'.format(s, p, o)
 
+    def _generalize_gp(self):
+        # Create a filtered graph pattern from the request one (general_gp)
+        general_gp = GraphPattern()
+        for new_tp in map(lambda x: self._remove_tp_filters(x), self._graph_pattern):
+            general_gp.add(new_tp)
+        if self._filter_mapping:
+            # Store the filter mapping
+            self._pipe.hmset('{}filters'.format(self._request_key), self._filter_mapping)
+        return general_gp
+
     @abstractmethod
-    def _save(self, action):
+    def _save(self, action, general=True):
         """
         Stores data relating to the recovery of a fragment for this request
         """
@@ -259,22 +275,16 @@ class FragmentSink(DeliverySink):
         # Recover pattern from the request object
         self._graph_pattern = action.request.pattern
 
-        # Create a filtered graph pattern from the request one (general_gp)
-        general_gp = GraphPattern()
-        for new_tp in map(lambda x: self._remove_tp_filters(x), self._graph_pattern):
-            general_gp.add(new_tp)
-        if self._filter_mapping:
-            # Store the filter mapping
-            self._pipe.hmset('{}filters'.format(self._request_key), self._filter_mapping)
+        effective_gp = self._generalize_gp() if general else self._graph_pattern
 
         # fragment_mapping is a tuple like (fragment_id, mapping)
-        fragment_mapping = self.__check_gp_mappings(gp=general_gp)
+        fragment_mapping = self.__check_gp_mappings(gp=effective_gp)
         exists = fragment_mapping is not None
         if not exists:
             # If there is no mapping, register a new fragment collection for the general graph pattern
             fragment_id = str(uuid())
             self._pipe.sadd('fragments', fragment_id)
-            self._pipe.sadd('fragments:{}:gp'.format(fragment_id), *general_gp)
+            self._pipe.sadd('fragments:{}:gp'.format(fragment_id), *effective_gp)
             mapping = {str(k): str(k) for k in action.request.variable_labels}
         else:
             fragment_id, mapping = fragment_mapping
@@ -284,7 +294,8 @@ class FragmentSink(DeliverySink):
 
         # Here the following is persisted: mapping, pref_labels, fragment-request links and the original graph_pattern
         self._pipe.hmset('{}map'.format(self._request_key), mapping)
-        self._pipe.sadd('{}pl'.format(self._request_key), *action.request.preferred_labels)
+        if action.request.preferred_labels:
+            self._pipe.sadd('{}pl'.format(self._request_key), *action.request.preferred_labels)
         self._pipe.sadd('fragments:{}:requests'.format(fragment_id), self._request_id)
         self._pipe.hset('{}'.format(self._request_key), 'fragment_id', fragment_id)
         self._pipe.sadd('{}gp'.format(self._request_key), *self._graph_pattern)

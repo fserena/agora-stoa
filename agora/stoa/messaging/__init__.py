@@ -42,7 +42,7 @@ EXCHANGE_CONFIG = app.config['EXCHANGE']
 exchange = EXCHANGE_CONFIG['exchange']
 queue = EXCHANGE_CONFIG['queue']
 topic_pattern = EXCHANGE_CONFIG['topic_pattern']
-response_prefix = EXCHANGE_CONFIG['response_rk_prefix']
+response_prefix = EXCHANGE_CONFIG['response_rk']
 
 log.info("""Broker setup:
                 - host: {}
