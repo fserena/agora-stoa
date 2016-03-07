@@ -23,7 +23,7 @@
 """
 
 import os
-from flask import Flask
+from flask import Flask, jsonify
 
 __author__ = 'Fernando Serena'
 
@@ -31,3 +31,35 @@ config = os.environ.get('STOA_CONFIG', 'agora.stoa.server.config.DevelopmentConf
 
 app = Flask(__name__)
 app.config.from_object(config)
+
+
+class APIError(Exception):
+    status_code = 400
+
+    def __init__(self, message, status_code=None, payload=None):
+        Exception.__init__(self)
+        self.message = message
+        if status_code is not None:
+            self.status_code = status_code
+        self.payload = payload
+
+    def to_dict(self):
+        rv = dict(self.payload or ())
+        rv['message'] = self.message
+        return rv
+
+
+class NotFound(APIError):
+    def __init__(self, message, payload=None):
+        super(NotFound, self).__init__(message, 404, payload)
+
+
+class Conflict(APIError):
+    def __init__(self, message, payload=None):
+        super(Conflict, self).__init__(message, 409, payload)
+
+
+@app.errorhandler(APIError)
+def handle_invalid_usage(error):
+    response = jsonify(error.to_dict())
+    response.status_code = error.status_code

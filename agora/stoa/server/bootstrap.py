@@ -44,7 +44,7 @@ logger.addHandler(ch)
 logger.setLevel(log_level)
 
 
-def bootstrap(config=None, modules=None, metadata_pkg=None, logger_name=None):
+def bootstrap(config=None, modules=None, metadata_pkg=None, logger_name=None, api_ext=None):
     if metadata_pkg is None:
         metadata_pkg = root
     metadata_path = os.path.join(metadata_pkg.__path__[0], 'metadata.json')
@@ -61,6 +61,9 @@ def bootstrap(config=None, modules=None, metadata_pkg=None, logger_name=None):
     logger.info('--- Starting {} v{} ---'.format(metadata.get('name'), metadata.get('version')))
 
     logger.info('Loading API description...')
+    if api_ext is not None and isinstance(modules, list):
+        for ext in api_ext:
+            import_module(ext)
     from agora.stoa import api
 
     if modules is not None and isinstance(modules, list):
