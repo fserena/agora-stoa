@@ -150,7 +150,7 @@ def __deliver_responses():
                 pass
             r.srem('deliveries:sent', rid)
 
-        time.sleep(1)
+        time.sleep(0.1)
 
 
 # Log delivery counters at startup
