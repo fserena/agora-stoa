@@ -10,3 +10,4 @@ rfc3987
 pika
 Agora-Client
 shortuuid
+pymongo

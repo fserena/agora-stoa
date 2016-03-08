@@ -44,7 +44,7 @@ setup(
     packages=find_packages(exclude=['ez_setup', 'examples', 'tests']),
     namespace_packages=['agora', 'agora.stoa'],
     install_requires=['shortuuid', 'pika', 'flask', 'Flask-Negotiate', 'redis', 'hiredis',
-                      'networkx', 'Agora-Client'],
+                      'networkx', 'Agora-Client', 'pymongo'],
     classifiers=[],
     package_dir={'agora.stoa': 'agora/stoa', 'agora.stoa.server': 'agora/stoa/server'},
     package_data={'agora.stoa.server': ['templates/*.*', 'static/*.*'], 'agora.stoa': ['metadata.json']},

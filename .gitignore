@@ -1,4 +1,3 @@
-graph_store/
 .env/
 .idea/
 *.pyc
@@ -7,4 +6,3 @@ graph_store/
 *.xml
 dist/
 .coverage
-store/

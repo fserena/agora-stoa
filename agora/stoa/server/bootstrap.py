@@ -60,6 +60,11 @@ def bootstrap(config=None, modules=None, metadata_pkg=None, logger_name=None, ap
     logger = logging.getLogger(logger_name)
     logger.info('--- Starting {} v{} ---'.format(metadata.get('name'), metadata.get('version')))
 
+    logger.info('Loading stores...')
+    import agora.stoa.store
+    import agora.stoa.store.triples
+    import agora.stoa.store.tables
+
     logger.info('Loading API description...')
     if api_ext is not None and isinstance(modules, list):
         for ext in api_ext:

@@ -33,10 +33,16 @@ def _api_port():
     return int(os.environ.get('API_PORT', 5007))
 
 
-def _redis_conf(def_host, def_db, def_port):
+def _redis_conf(def_host, def_port, def_db):
     return {'host': os.environ.get('DB_HOST', def_host),
             'db': int(os.environ.get('DB_DB', def_db)),
             'port': int(os.environ.get('DB_PORT', def_port))}
+
+
+def _mongo_conf(def_host, def_port, def_db):
+    return {'host': os.environ.get('MONGO_HOST', def_host),
+            'db': os.environ.get('MONGO_DB', def_db),
+            'port': int(os.environ.get('MONGO_PORT', def_port))}
 
 
 def _agora_conf(def_host, def_port):
@@ -64,7 +70,8 @@ def _logging_conf(def_level):
 
 class Config(object):
     PORT = _api_port()
-    REDIS = _redis_conf('localhost', 4, 6379)
+    REDIS = _redis_conf('localhost', 6379, 4)
+    MONGO = _mongo_conf('localhost', 27017, 'scholar')
     AGORA = _agora_conf('localhost', 9002)
     BROKER = _broker_conf('localhost', 5672)
     EXCHANGE = _exchange_conf('stoa', 'stoa_requests', 'stoa.request.*', 'stoa.response')
