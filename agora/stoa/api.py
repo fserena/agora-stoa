@@ -39,7 +39,7 @@ def filter_hash_attrs(key, predicate):
 @app.route('/requests')
 def get_requests():
     requests = [rk.split(':')[1] for rk in r.keys('requests:*:')]
-    return jsonify(results=requests)
+    return jsonify(requests=requests)
 
 
 @app.route('/requests/<rid>')
@@ -63,7 +63,7 @@ def get_request(rid):
 def get_fragments():
     fragment_ids = list(r.smembers('fragments'))
     f_list = [{'id': fid, 'gp': list(r.smembers('fragments:{}:gp'.format(fid)))} for fid in fragment_ids]
-    return jsonify(results=f_list)
+    return jsonify(fragments=f_list)
 
 
 class FragmentView(View):
