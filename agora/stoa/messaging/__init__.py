@@ -29,6 +29,7 @@ import pika
 import time
 
 from agora.stoa.actions import execute
+from agora.stoa.actions.core import PassRequest
 from agora.stoa.server import app
 
 __author__ = 'Fernando Serena'
@@ -62,6 +63,10 @@ def callback(ch, method, properties, body):
         execute(*action_args, data=body)
     except (NameError, SystemError) as e:
         log.error(e.message)
+        ch.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
+        log.debug('Sent REJECT')
+    except PassRequest:
+        log.info('Skipping request...')
         ch.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
         log.debug('Sent REJECT')
     except IOError as e:

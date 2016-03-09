@@ -27,6 +27,7 @@ import calendar
 import logging
 
 from abc import abstractproperty, abstractmethod, ABCMeta
+from agora.stoa.actions.core import PassRequest
 from agora.stoa.actions.core.utils import CGraph
 from agora.stoa.store import r
 from rdflib import RDF
@@ -108,6 +109,7 @@ class Sink(object):
      Every action should have a sink that deals with Action persistency.
     """
     __metaclass__ = ABCMeta
+    passed_requests = set([])
 
     def __init__(self):
         self._pipe = r.pipeline(transaction=True)
@@ -223,6 +225,11 @@ class Sink(object):
                                              '__response_class': self.__response_fullname(action.response_class)(),
                                              'type': action.__class__.__module__,
                                              '__hash': action.id})
+
+    @staticmethod
+    def do_pass(action):
+        Sink.passed_requests.add(action.id)
+        raise PassRequest()
 
     @property
     def request_id(self):

@@ -22,6 +22,7 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
 import logging
+from random import random
 
 from abc import ABCMeta, abstractmethod
 from agora.client.wrapper import Agora
@@ -38,6 +39,7 @@ __author__ = 'Fernando Serena'
 
 log = logging.getLogger('agora.stoa.actions.fragment')
 agora_conf = app.config['AGORA']
+PASS_THRESHOLD = app.config['BEHAVIOUR']['pass_threshold']
 agora_client = Agora(**agora_conf)
 fragment_locks = {}
 
@@ -48,6 +50,9 @@ except Exception:
     log.warning('Agora is not currently available at {}'.format(agora_conf))
 else:
     log.info('Connected to Agora: {}'.format(agora_conf))
+
+log.info("""Behaviour parameters:
+                    - Pass threshold: {}""".format(PASS_THRESHOLD))
 
 
 class FragmentRequest(DeliveryRequest):
@@ -280,6 +285,16 @@ class FragmentSink(DeliverySink):
         # fragment_mapping is a tuple like (fragment_id, mapping)
         fragment_mapping = self.__check_gp_mappings(gp=effective_gp)
         exists = fragment_mapping is not None
+
+        # Decide to proceed depending on whether it's the first time this request is received and the fragment
+        # is already known
+        proceed = action.id in self.passed_requests or (
+            random() > 1.0 - PASS_THRESHOLD if not exists else random() > PASS_THRESHOLD)
+        if not proceed:
+            self.do_pass(action)
+        if action.id in self.passed_requests:
+            self.passed_requests.remove(action.id)
+
         if not exists:
             # If there is no mapping, register a new fragment collection for the general graph pattern
             fragment_id = str(uuid())

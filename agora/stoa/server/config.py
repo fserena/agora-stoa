@@ -64,6 +64,12 @@ def _exchange_conf(def_exchange, def_queue, def_tp, def_response_rk):
     }
 
 
+def _behaviour_conf(def_pass_threshold):
+    return {
+        'pass_threshold': float(os.environ.get('PASS_THRESHOLD', def_pass_threshold))
+    }
+
+
 def _logging_conf(def_level):
     return int(os.environ.get('LOG_LEVEL', def_level))
 
@@ -75,6 +81,7 @@ class Config(object):
     AGORA = _agora_conf('localhost', 9002)
     BROKER = _broker_conf('localhost', 5672)
     EXCHANGE = _exchange_conf('stoa', 'stoa_requests', 'stoa.request.*', 'stoa.response')
+    BEHAVIOUR = _behaviour_conf(0.1)
 
 
 class DevelopmentConfig(Config):

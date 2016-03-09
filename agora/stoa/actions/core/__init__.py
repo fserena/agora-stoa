@@ -29,3 +29,7 @@ __author__ = 'Fernando Serena'
 STOA = Namespace('http://www.smartdeveloperhub.org/vocabulary/stoa#')
 AMQP = Namespace('http://www.smartdeveloperhub.org/vocabulary/amqp#')
 TYPES = Namespace('http://www.smartdeveloperhub.org/vocabulary/types#')
+
+
+class PassRequest(Exception):
+    pass
