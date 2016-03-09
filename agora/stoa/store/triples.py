@@ -32,7 +32,7 @@ import os
 import shortuuid
 from agora.stoa.server import app
 from agora.stoa.store import r
-from agora.stoa.actions.core import STOA
+from agora.stoa.actions.core import STOA, AGENT_ID
 from concurrent.futures import ThreadPoolExecutor
 from rdflib import ConjunctiveGraph, URIRef, Literal, XSD, BNode
 
@@ -70,7 +70,7 @@ def load_stream_triples(fid, until):
         c, s, p, o = eval(x)
         return c, __term(s), __term(p), __term(o)
 
-    for x in r.zrangebyscore('fragments:{}:stream'.format(fid), '-inf', '{}'.format(float(until))):
+    for x in r.zrangebyscore('{}:fragments:{}:stream'.format(AGENT_ID, fid), '-inf', '{}'.format(float(until))):
         yield __triplify(x)
 
 
@@ -79,7 +79,7 @@ def add_stream_triple(fid, tp, (s, p, o), timestamp=None):
         if timestamp is None:
             timestamp = calendar.timegm(dt.utcnow().timetuple())
         quad = (tp, s.n3(), p.n3(), o.n3())
-        stream_key = 'fragments:{}:stream'.format(fid)
+        stream_key = '{}:fragments:{}:stream'.format(AGENT_ID, fid)
         not_found = not bool(r.zscore(stream_key, quad))
         if not_found:
             with r.pipeline() as pipe:

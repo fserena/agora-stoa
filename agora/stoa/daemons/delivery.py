@@ -22,9 +22,9 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
 import logging
-import traceback
 from threading import Thread
 
+from agora.stoa.actions.core import AGENT_ID
 from agora.stoa.messaging.reply import reply
 from agora.stoa.server import app
 from agora.stoa.store import r
@@ -43,6 +43,10 @@ thp = ThreadPoolExecutor(max_workers=min(8, MAX_CONCURRENT_DELIVERIES))
 log.info("""Delivery daemon setup:
                     - Maximum concurrent deliveries: {}""".format(MAX_CONCURRENT_DELIVERIES))
 
+deliveries_key = '{}:deliveries'.format(AGENT_ID)
+ready_key = '{}:ready'.format(deliveries_key)
+sent_key = '{}:sent'.format(deliveries_key)
+
 
 def build_response(rid):
     """
@@ -51,7 +55,7 @@ def build_response(rid):
     :return: The response object
     """
     from agora.stoa.actions import get_instance
-    response_class = r.hget('requests:{}:'.format(rid), '__response_class')
+    response_class = r.hget('{}:requests:{}:'.format(AGENT_ID, rid), '__response_class')
     if response_class is None:
         raise AttributeError('Cannot create a response for {}'.format(rid))
     (module_name, class_name) = tuple(response_class.split('.'))
@@ -101,13 +105,13 @@ def __deliver_response(rid):
             log.error('Request {} should not be marked as deliver-ready, its state is inconsistent'.format(rid))
         else:
             log.info('Response of request {} is being delivered by other means...'.format(rid))
-            r.srem('deliveries:ready', rid)
+            r.srem(ready_key, rid)
     except StopIteration:  # There was nothing prepared to deliver (Its state may have changed to
         # 'streaming')
-        r.srem('deliveries:ready', rid)
+        r.srem(ready_key, rid)
     except (EnvironmentError, AttributeError, Exception), e:
-        r.srem('deliveries:ready', rid)
-        traceback.print_exc()
+        r.srem(ready_key, rid)
+        # traceback.print_exc()
         log.warning(e.message)
         if response is not None:
             log.error('Force remove of request {} due to a delivery error'.format(rid))
@@ -124,7 +128,7 @@ def __deliver_responses():
     futures = {}
     while True:
         # Get all ready deliveries
-        ready = r.smembers('deliveries:ready')
+        ready = r.smembers(ready_key)
         for rid in ready:
             # If the delivery is not in the thread pool, just submit it
             if rid not in futures:
@@ -137,10 +141,10 @@ def __deliver_responses():
                 del futures[obsolete_rid]
 
         # All those deliveries that are marked as 'sent' are being cleared here along its request data
-        sent = r.smembers('deliveries:sent')
+        sent = r.smembers(sent_key)
         for rid in sent:
-            r.srem('deliveries:ready', rid)
-            r.srem('deliveries', rid)
+            r.srem(ready_key, rid)
+            r.srem(deliveries_key, rid)
             try:
                 response = build_response(rid)
                 response.sink.remove()
@@ -148,14 +152,14 @@ def __deliver_responses():
             except AttributeError:
                 log.warning('Request number {} was deleted by other means'.format(rid))
                 pass
-            r.srem('deliveries:sent', rid)
+            r.srem(sent_key, rid)
 
         time.sleep(0.1)
 
 
 # Log delivery counters at startup
-registered_deliveries = r.scard('deliveries')
-deliveries_ready = r.scard('deliveries:ready')
+registered_deliveries = r.scard(deliveries_key)
+deliveries_ready = r.scard(ready_key)
 log.info("""Delivery daemon started:
                 - Deliveries: {}
                 - Ready: {}""".format(registered_deliveries, deliveries_ready))

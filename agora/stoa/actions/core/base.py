@@ -27,7 +27,7 @@ import calendar
 import logging
 
 from abc import abstractproperty, abstractmethod, ABCMeta
-from agora.stoa.actions.core import PassRequest
+from agora.stoa.actions.core import PassRequest, AGENT_ID
 from agora.stoa.actions.core.utils import CGraph
 from agora.stoa.store import r
 from rdflib import RDF
@@ -80,6 +80,7 @@ class Action(object):
         """
         return self.__request_id
 
+
     @property
     def id(self):
         """
@@ -116,16 +117,17 @@ class Sink(object):
         self._request_id = None
         self._request_key = None
         self._dict_fields = {}
+        self._requests_key = '{}:requests'.format(AGENT_ID)
 
     def load(self, rid):
         """
         Checks the given request id and loads its associated data
         """
 
-        if not r.keys('requests:{}:'.format(rid)):
+        if not r.keys('{}:requests:{}:'.format(AGENT_ID, rid)):
             raise ValueError('Cannot load request: Unknown request id {}'.format(rid))
         self._request_id = rid
-        self._request_key = 'requests:{}:'.format(self._request_id)
+        self._request_key = '{}:requests:{}:'.format(AGENT_ID, self._request_id)
         self._load()
 
     @staticmethod
@@ -151,7 +153,7 @@ class Sink(object):
         Sink-specific load statements (to be extended)
         :return:
         """
-        self._dict_fields = r.hgetall('requests:{}:'.format(self._request_id))
+        self._dict_fields = r.hgetall(self._request_key)
 
     def __getattr__(self, item):
         if item in self._dict_fields:
@@ -187,7 +189,7 @@ class Sink(object):
         with r.pipeline(transaction=True) as p:
             p.multi()
             action_id = r.hget(self._request_key, 'id')
-            p.zrem('requests', action_id)
+            p.zrem(self._requests_key, action_id)
             r_keys = r.keys('{}*'.format(self._request_key))
             for key in r_keys:
                 p.delete(key)
@@ -210,13 +212,13 @@ class Sink(object):
         :param action: The action that contains the data to be stored
         """
         # Firstly, we have to check if the action was previously stored...
-        if r.zscore('requests', action.id):
+        if r.zscore('{}:requests'.format(AGENT_ID), action.id):
             raise ValueError('Duplicated request: {}'.format(action.id))
         submitted_by_ts = calendar.timegm(action.request.submitted_on.timetuple())
 
         # The action id is stored in a sorted set using its timestamp as score
-        self._pipe.zadd('requests', submitted_by_ts, action.id)
-        self._request_key = 'requests:{}:'.format(self._request_id)
+        self._pipe.zadd(self._requests_key, submitted_by_ts, action.id)
+        self._request_key = '{}:requests:{}:'.format(AGENT_ID, self._request_id)
         # Basic request data is stored on a dictionary (hashmap)
         self._pipe.hmset(self._request_key, {'submitted_by': action.request.submitted_by,
                                              'submitted_on': action.request.submitted_on,

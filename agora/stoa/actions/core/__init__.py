@@ -23,12 +23,16 @@
 """
 
 from rdflib.namespace import Namespace, RDF, FOAF, XSD
+from agora.stoa.server import app
 
 __author__ = 'Fernando Serena'
 
 STOA = Namespace('http://www.smartdeveloperhub.org/vocabulary/stoa#')
 AMQP = Namespace('http://www.smartdeveloperhub.org/vocabulary/amqp#')
 TYPES = Namespace('http://www.smartdeveloperhub.org/vocabulary/types#')
+
+# Spefic service ID
+AGENT_ID = app.config['ID']
 
 
 class PassRequest(Exception):

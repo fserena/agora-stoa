@@ -23,14 +23,18 @@
 """
 
 import logging
+import uuid
 
 import os
-
 __author__ = 'Fernando Serena'
 
 
 def _api_port():
     return int(os.environ.get('API_PORT', 5007))
+
+
+def _agent_id():
+    return os.environ.get('AGENT_ID', uuid.uuid4())
 
 
 def _redis_conf(def_host, def_port, def_db):
@@ -82,6 +86,7 @@ class Config(object):
     BROKER = _broker_conf('localhost', 5672)
     EXCHANGE = _exchange_conf('stoa', 'stoa_requests', 'stoa.request.*', 'stoa.response')
     BEHAVIOUR = _behaviour_conf(0.1)
+    ID = _agent_id()
 
 
 class DevelopmentConfig(Config):

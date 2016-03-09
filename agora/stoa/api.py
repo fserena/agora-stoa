@@ -29,6 +29,8 @@ from flask.views import View
 
 __author__ = 'Fernando Serena'
 
+AGENT_ID = app.config['ID']
+
 
 def filter_hash_attrs(key, predicate):
     hash_map = r.hgetall(key)
@@ -38,19 +40,19 @@ def filter_hash_attrs(key, predicate):
 
 @app.route('/requests')
 def get_requests():
-    requests = [rk.split(':')[1] for rk in r.keys('requests:*:')]
+    requests = [rk.split(':')[1] for rk in r.keys('{}:requests:*:'.format(AGENT_ID))]
     return jsonify(requests=requests)
 
 
 @app.route('/requests/<rid>')
 def get_request(rid):
-    if not r.exists('requests:{}:'.format(rid)):
+    if not r.exists('{}:requests:{}:'.format(AGENT_ID, rid)):
         raise NotFound('The request {} does not exist'.format(rid))
-    r_dict = filter_hash_attrs('requests:{}:'.format(rid), lambda x: not x.startswith('__'))
+    r_dict = filter_hash_attrs('{}:requests:{}:'.format(AGENT_ID, rid), lambda x: not x.startswith('__'))
     channel = r_dict['channel']
-    ch_dict = r.hgetall('channels:{}'.format(channel))
+    ch_dict = r.hgetall('{}:channels:{}'.format(AGENT_ID, channel))
     broker = r_dict['broker']
-    br_dict = r.hgetall('brokers:{}'.format(broker))
+    br_dict = r.hgetall('{}:brokers:{}'.format(AGENT_ID, broker))
     r_dict['channel'] = ch_dict
     r_dict['broker'] = br_dict
     if 'mapping' in r_dict:
@@ -61,8 +63,8 @@ def get_request(rid):
 
 @app.route('/fragments')
 def get_fragments():
-    fragment_ids = list(r.smembers('fragments'))
-    f_list = [{'id': fid, 'gp': list(r.smembers('fragments:{}:gp'.format(fid)))} for fid in fragment_ids]
+    fragment_ids = list(r.smembers('{}:fragments'.format(AGENT_ID)))
+    f_list = [{'id': fid, 'gp': list(r.smembers('{}:fragments:{}:gp'.format(AGENT_ID, fid)))} for fid in fragment_ids]
     return jsonify(fragments=f_list)
 
 
@@ -71,14 +73,14 @@ class FragmentView(View):
 
     @staticmethod
     def __get_fragment(fid):
-        if not r.sismember('fragments', fid):
+        if not r.sismember('{}:fragments'.format(AGENT_ID), fid):
             raise NotFound('The fragment {} does not exist'.format(fid))
 
         f_dict = {
             'id': fid,
-            'gp': list(r.smembers('fragments:{}:gp'.format(fid))),
-            'synced': r.exists('fragments:{}:sync'.format(fid)),
-            'requests': list(r.smembers('fragments:{}:requests'.format(fid)))
+            'gp': list(r.smembers('{}:fragments:{}:gp'.format(AGENT_ID, fid))),
+            'synced': r.exists('{}:fragments:{}:sync'.format(AGENT_ID, fid)),
+            'requests': list(r.smembers('{}:fragments:{}:requests'.format(AGENT_ID, fid)))
         }
 
         return f_dict

@@ -26,7 +26,7 @@ from random import random
 
 from abc import ABCMeta, abstractmethod
 from agora.client.wrapper import Agora
-from agora.stoa.actions.core import STOA, RDF
+from agora.stoa.actions.core import STOA, RDF, AGENT_ID
 from agora.stoa.actions.core.delivery import DeliveryRequest, DeliveryAction, DeliveryResponse, DeliverySink
 from agora.stoa.actions.core.utils import CGraph, GraphPattern
 from agora.stoa.actions.core.utils import tp_parts
@@ -219,6 +219,9 @@ class FragmentSink(DeliverySink):
         self._graph_pattern = GraphPattern()
         self._fragment_pattern = GraphPattern()
         self._filter_mapping = {}
+        self._fragments_key = '{}:fragments'.format(AGENT_ID)
+        self.__f_key_pattern = '{}:'.format(self._fragments_key) + '{}'
+        self._fragment_key = None
         self._preferred_labels = set([])
 
     def __check_gp_mappings(self, gp=None):
@@ -229,12 +232,12 @@ class FragmentSink(DeliverySink):
         """
         if gp is None:
             gp = self._graph_pattern
-        gp_keys = r.keys('fragments:*:gp')
+        gp_keys = r.keys('{}:*:gp'.format(self._fragments_key))
         for gpk in gp_keys:
             stored_gp = GraphPattern(r.smembers(gpk))
             mapping = stored_gp.mapping(gp)
             if mapping:
-                return gpk.split(':')[1], mapping
+                return gpk.split(':')[-2], mapping
         return None
 
     def _remove_tp_filters(self, tp):
@@ -298,21 +301,23 @@ class FragmentSink(DeliverySink):
         if not exists:
             # If there is no mapping, register a new fragment collection for the general graph pattern
             fragment_id = str(uuid())
-            self._pipe.sadd('fragments', fragment_id)
-            self._pipe.sadd('fragments:{}:gp'.format(fragment_id), *effective_gp)
+            self._fragment_key = self.__f_key_pattern.format(fragment_id)
+            self._pipe.sadd(self._fragments_key, fragment_id)
+            self._pipe.sadd('{}:gp'.format(self._fragment_key), *effective_gp)
             mapping = {str(k): str(k) for k in action.request.variable_labels}
             mapping.update({str(k): str(k) for k in self._filter_mapping})
         else:
             fragment_id, mapping = fragment_mapping
+            self._fragment_key = self.__f_key_pattern.format(fragment_id)
             # Remove the sync state if the fragment is on-demand mode
-            if r.get('fragments:{}:on_demand'.format(fragment_id)) is not None:
-                self._pipe.delete('fragments:{}:sync'.format(fragment_id))
+            if r.get('{}:on_demand'.format(self._fragment_key)) is not None:
+                self._pipe.delete('{}:sync'.format(self._fragment_key))
 
         # Here the following is persisted: mapping, pref_labels, fragment-request links and the original graph_pattern
         self._pipe.hmset('{}map'.format(self._request_key), mapping)
         if action.request.preferred_labels:
             self._pipe.sadd('{}pl'.format(self._request_key), *action.request.preferred_labels)
-        self._pipe.sadd('fragments:{}:requests'.format(fragment_id), self._request_id)
+        self._pipe.sadd('{}:requests'.format(self._fragment_key), self._request_id)
         self._pipe.hset('{}'.format(self._request_key), 'fragment_id', fragment_id)
         self._pipe.sadd('{}gp'.format(self._request_key), *self._graph_pattern)
         self._pipe.hset('{}'.format(self._request_key), 'pattern', ' . '.join(self._graph_pattern))
@@ -326,7 +331,7 @@ class FragmentSink(DeliverySink):
             log.info('Request {} has started a new fragment collection: {}'.format(self._request_id, fragment_id))
         else:
             log.info('Request {} is going to re-use fragment {}'.format(self._request_id, fragment_id))
-            n_fragment_reqs = r.scard('fragments:{}:requests'.format(fragment_id))
+            n_fragment_reqs = r.scard('{}:requests'.format(self._fragment_key))
             log.info('Fragment {} is supporting {} more requests'.format(fragment_id, n_fragment_reqs))
 
     @abstractmethod
@@ -335,7 +340,8 @@ class FragmentSink(DeliverySink):
         Removes data relating to the recovery of a fragment for this request
         """
         fragment_id = r.hget('{}'.format(self._request_key), 'fragment_id')
-        pipe.srem('fragments:{}:requests'.format(fragment_id), self._request_id)
+        self._fragment_key = self.__f_key_pattern.format(fragment_id)
+        pipe.srem('{}:requests'.format(self._fragment_key), self._request_id)
         pipe.delete('{}gp'.format(self._request_key))
         pipe.delete('{}map'.format(self._request_key))
         pipe.delete('{}pl'.format(self._request_key))
@@ -349,7 +355,7 @@ class FragmentSink(DeliverySink):
         """
         super(FragmentSink, self)._load()
         self._graph_pattern = GraphPattern(r.smembers('{}gp'.format(self._request_key)))
-        self._fragment_pattern = GraphPattern(r.smembers('fragments:{}:gp'.format(self.fragment_id)))
+        self._fragment_pattern = GraphPattern(r.smembers('{}:gp'.format(self._fragment_key)))
         self._filter_mapping = r.hgetall('{}filters'.format(self._request_key))
         self._dict_fields['mapping'] = r.hgetall('{}map'.format(self._request_key))
         self._dict_fields['preferred_labels'] = set(r.smembers('{}pl'.format(self._request_key)))

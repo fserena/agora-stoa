@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime
 
 from abc import ABCMeta, abstractmethod
-from agora.stoa.actions.core import RDF, STOA, FOAF, TYPES, XSD
+from agora.stoa.actions.core import RDF, STOA, FOAF, TYPES, XSD, AGENT_ID
 from agora.stoa.actions.core.base import Request, Action, Response, Sink
 from agora.stoa.actions.core.utils import CGraph
 from agora.stoa.messaging.reply import reply
@@ -43,7 +43,7 @@ EXCHANGE_CONFIG = app.config['EXCHANGE']
 exchange = EXCHANGE_CONFIG['exchange']
 response_rk = EXCHANGE_CONFIG['response_rk']
 log = logging.getLogger('agora.stoa.actions.delivery')
-AGENT_UUID = Literal(str(uuid.uuid4()), datatype=TYPES.UUID)
+LIT_AGENT_ID = Literal(AGENT_ID, datatype=TYPES.UUID)
 
 
 def _build_reply_templates():
@@ -60,7 +60,7 @@ def _build_reply_templates():
     accepted.add((response_node, STOA.responseNumber, Literal("0", datatype=XSD.unsignedLong)))
     accepted.add((response_node, STOA.submittedBy, agent_node))
     accepted.add(
-        (agent_node, STOA.agentId, AGENT_UUID))
+        (agent_node, STOA.agentId, LIT_AGENT_ID))
     accepted.bind('types', TYPES)
     accepted.bind('stoa', STOA)
     accepted.bind('foaf', FOAF)
@@ -253,7 +253,7 @@ def used_channels():
     """
     Selects all channels that were declared by current requests
     """
-    req_channel_keys = r.keys('requests:*:')
+    req_channel_keys = r.keys('{}:requests:*:'.format(AGENT_ID))
     for rck in req_channel_keys:
         try:
             channel = r.hget(rck, 'channel')
@@ -266,6 +266,7 @@ def used_channels():
 def channel_sharing(channel_b64):
     """
     Calculates how many channel identifiers match the given one (channel_b64)
+    :param channel_b64:
     """
     return len(list(filter(lambda x: x == channel_b64, used_channels()))) - 1  # Don't count itself
 
@@ -273,17 +274,23 @@ def channel_sharing(channel_b64):
 class DeliverySink(Sink):
     __metaclass__ = ABCMeta
 
+    def __init__(self):
+        super(DeliverySink, self).__init__()
+        self.__deliveries_key = '{}:deliveries'.format(AGENT_ID)
+        self.__ready_key = '{}:ready'.format(self.__deliveries_key)
+        self.__sent_key = '{}:sent'.format(self.__deliveries_key)
+
     @abstractmethod
     def _save(self, action):
         """
         Stores delivery channel data
         """
         super(DeliverySink, self)._save(action)
-        self._pipe.sadd('deliveries', self._request_id)
+        self._pipe.sadd(self.__deliveries_key, self._request_id)
         broker_b64 = base64.b64encode('|'.join(map(lambda x: str(x), action.request.broker.values())))
         channel_b64 = base64.b64encode('|'.join(action.request.channel.values()))
-        self._pipe.hmset('channels:{}'.format(channel_b64), action.request.channel)
-        self._pipe.hmset('brokers:{}'.format(broker_b64), action.request.broker)
+        self._pipe.hmset('{}:channels:{}'.format(AGENT_ID, channel_b64), action.request.channel)
+        self._pipe.hmset('{}:brokers:{}'.format(AGENT_ID, broker_b64), action.request.broker)
         self._pipe.hset('{}'.format(self._request_key), 'channel', channel_b64)
         self._pipe.hset('{}'.format(self._request_key), 'broker', broker_b64)
 
@@ -293,8 +300,8 @@ class DeliverySink(Sink):
         Loads all delivery data
         """
         super(DeliverySink, self)._load()
-        self._dict_fields['channel'] = r.hgetall('channels:{}'.format(self._dict_fields['channel']))
-        self._dict_fields['broker'] = r.hgetall('brokers:{}'.format(self._dict_fields['broker']))
+        self._dict_fields['channel'] = r.hgetall('{}:channels:{}'.format(AGENT_ID, self._dict_fields['channel']))
+        self._dict_fields['broker'] = r.hgetall('{}:brokers:{}'.format(AGENT_ID, self._dict_fields['broker']))
         self._dict_fields['broker']['port'] = int(self._dict_fields['broker']['port'])
         recipient = self._dict_fields['channel'].copy()
         recipient.update(self._dict_fields['broker'])
@@ -318,15 +325,15 @@ class DeliverySink(Sink):
         sharing = channel_sharing(channel_b64)
         if not sharing:
             log.info('Removing delivery channel ({}) for request {}'.format(channel_b64, self._request_id))
-            pipe.delete('channels:{}'.format(channel_b64))
+            pipe.delete('{}:channels:{}'.format(AGENT_ID, channel_b64))
         else:
             log.info('Cannot remove delivery channel of request {}. It is being shared with {} another requests'.format(
                 self.request_id, sharing))
 
         super(DeliverySink, self)._remove(pipe)
 
-        pipe.srem('deliveries', self._request_id)
-        pipe.srem('deliveries:ready', self._request_id)
+        pipe.srem(self.__deliveries_key, self._request_id)
+        pipe.srem(self.__ready_key, self._request_id)
 
     @property
     def delivery(self):
@@ -341,11 +348,11 @@ class DeliverySink(Sink):
         with r.pipeline(transaction=True) as p:
             p.multi()
             if value == 'ready':
-                p.sadd('deliveries:ready', self._request_id)
+                p.sadd(self.__ready_key, self._request_id)
             elif value == 'sent':
-                p.sadd('deliveries:sent', self._request_id)
+                p.sadd(self.__sent_key, self._request_id)
             if value != 'ready':
-                p.srem('deliveries:ready', self._request_id)
+                p.srem(self.__ready_key, self._request_id)
             p.hset('{}'.format(self._request_key), 'delivery', value)
             p.execute()
         log.info('Request {} delivery state is now "{}"'.format(self._request_id, value))
