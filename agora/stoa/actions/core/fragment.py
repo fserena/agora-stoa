@@ -286,6 +286,7 @@ class FragmentSink(DeliverySink):
             self._pipe.sadd('fragments', fragment_id)
             self._pipe.sadd('fragments:{}:gp'.format(fragment_id), *effective_gp)
             mapping = {str(k): str(k) for k in action.request.variable_labels}
+            mapping.update({str(k): str(k) for k in self._filter_mapping})
         else:
             fragment_id, mapping = fragment_mapping
             # Remove the sync state if the fragment is on-demand mode
