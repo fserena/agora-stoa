@@ -46,8 +46,12 @@ __author__ = 'Fernando Serena'
 log = logging.getLogger('agora.stoa.store.triples')
 pool = ThreadPoolExecutor(max_workers=4)
 
-COLLECT_THROTTLING = max(1, int(app.config.get('PARAMS', {}).get('collect_throttling', 30)))
-MIN_CACHE_TIME = max(1, int(app.config.get('PARAMS', {}).get('min_cache_time', 10)))
+GRAPH_THROTTLING = max(1, int(app.config.get('CACHE', {}).get('graph_throttling', 30)))
+MIN_CACHE_TIME = max(0, int(app.config.get('CACHE', {}).get('min_cache_time', 10)))
+
+log.info("""Triple store setup:
+                    - Graph throttling: {}
+                    - Minimum cache time: {}""".format(GRAPH_THROTTLING, MIN_CACHE_TIME))
 
 
 def load_stream_triples(fid, until):
@@ -166,7 +170,7 @@ class GraphProvider(object):
             else:
                 post_ts = dt.now()
                 elapsed = (post_ts - self.__last_creation_ts).total_seconds()
-                throttling = (1.0 / COLLECT_THROTTLING) - elapsed
+                throttling = (1.0 / GRAPH_THROTTLING) - elapsed
                 if throttling > 0:
                     sleep(throttling)
 

@@ -74,6 +74,13 @@ def _behaviour_conf(def_pass_threshold):
     }
 
 
+def _cache_conf(def_graph_throttling, def_min_cache_time):
+    return {
+        'graph_throttling': float(os.environ.get('GRAPH_THROTTLING', def_graph_throttling)),
+        'min_cache_time': float(os.environ.get('MIN_CACHE_TIME', def_min_cache_time))
+    }
+
+
 def _logging_conf(def_level):
     return int(os.environ.get('LOG_LEVEL', def_level))
 
@@ -86,6 +93,7 @@ class Config(object):
     BROKER = _broker_conf('localhost', 5672)
     EXCHANGE = _exchange_conf('stoa', 'stoa_requests', 'stoa.request.*', 'stoa.response')
     BEHAVIOUR = _behaviour_conf(0.1)
+    CACHE = _cache_conf(20, 60)
     ID = _agent_id()
 
 
