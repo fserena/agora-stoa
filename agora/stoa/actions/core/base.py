@@ -26,6 +26,8 @@ import StringIO
 import calendar
 import logging
 
+from redis.lock import Lock
+
 from abc import abstractproperty, abstractmethod, ABCMeta
 from agora.stoa.actions.core import PassRequest, AGENT_ID
 from agora.stoa.actions.core.utils import CGraph
@@ -36,6 +38,14 @@ from shortuuid import uuid
 __author__ = 'Fernando Serena'
 
 log = logging.getLogger('agora.stoa.actions.base')
+
+log.info('Cleaning agent lock...')
+r.delete('{}:lock'.format(AGENT_ID))
+
+
+def agent_lock():
+    lock_key = '{}:lock'.format(AGENT_ID)
+    return r.lock(lock_key, lock_class=Lock)
 
 
 class Action(object):
@@ -80,7 +90,6 @@ class Action(object):
         """
         return self.__request_id
 
-
     @property
     def id(self):
         """
@@ -123,12 +132,16 @@ class Sink(object):
         """
         Checks the given request id and loads its associated data
         """
-
-        if not r.keys('{}:requests:{}:'.format(AGENT_ID, rid)):
-            raise ValueError('Cannot load request: Unknown request id {}'.format(rid))
-        self._request_id = rid
-        self._request_key = '{}:requests:{}:'.format(AGENT_ID, self._request_id)
-        self._load()
+        lock = agent_lock()
+        lock.acquire()
+        try:
+            if not r.keys('{}:requests:{}:'.format(AGENT_ID, rid)):
+                raise ValueError('Cannot load request: Unknown request id {}'.format(rid))
+            self._request_id = rid
+            self._request_key = '{}:requests:{}:'.format(AGENT_ID, self._request_id)
+            self._load()
+        finally:
+            lock.release()
 
     @staticmethod
     def __response_fullname(f):
@@ -168,34 +181,44 @@ class Sink(object):
         Generates a new request id and stores all action data
         :return: The new request id
         """
-        self._request_id = str(uuid())
-        self._pipe.multi()
-        self._save(action)
-        # It is not until this point when the pipe is executed!
-        # If it fails, nothing is stored
-        self._pipe.execute()
-        log.info("""Request {} was saved:
-                    -message id: {}
-                    -submitted on: {}
-                    -submitted by: {}""".format(self._request_id, action.request.message_id,
-                                                action.request.submitted_on, action.request.submitted_by))
-        return self._request_id
+        lock = agent_lock()
+        lock.acquire()
+        try:
+            self._request_id = str(uuid())
+            self._pipe.multi()
+            self._save(action)
+            # It is not until this point when the pipe is executed!
+            # If it fails, nothing is stored
+            self._pipe.execute()
+            log.info("""Request {} was saved:
+                        -message id: {}
+                        -submitted on: {}
+                        -submitted by: {}""".format(self._request_id, action.request.message_id,
+                                                    action.request.submitted_on, action.request.submitted_by))
+            return self._request_id
+        finally:
+            lock.release()
 
     def remove(self):
         """
         Creates a pipe to remove all stored data of the current request
         """
         # All dict_fields are being removed automatically here (hashmap request attributes)
-        with r.pipeline(transaction=True) as p:
-            p.multi()
-            action_id = r.hget(self._request_key, 'id')
-            p.zrem(self._requests_key, action_id)
-            r_keys = r.keys('{}*'.format(self._request_key))
-            for key in r_keys:
-                p.delete(key)
-            self._remove(p)
-            p.execute()
-        log.info('Request {} was removed'.format(self._request_id))
+        lock = agent_lock()
+        lock.acquire()
+        try:
+            with r.pipeline(transaction=True) as p:
+                p.multi()
+                action_id = r.hget(self._request_key, 'id')
+                p.zrem(self._requests_key, action_id)
+                r_keys = r.keys('{}*'.format(self._request_key))
+                for key in r_keys:
+                    p.delete(key)
+                self._remove(p)
+                p.execute()
+            log.info('Request {} was removed'.format(self._request_id))
+        finally:
+            lock.release()
 
     @abstractmethod
     def _remove(self, pipe):
