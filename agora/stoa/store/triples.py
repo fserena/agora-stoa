@@ -21,16 +21,16 @@
   limitations under the License.
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
-
 import calendar
 import logging
 import shutil
 import traceback
 from random import random
-from threading import RLock
+from threading import Lock
 
 import datetime
 from datetime import datetime as dt
+from redis.lock import Lock as RedisLock
 from time import sleep
 
 import os
@@ -53,12 +53,20 @@ log.info("""Triple store setup:
                     - Graph throttling: {}
                     - Minimum cache time: {}""".format(GRAPH_THROTTLING, MIN_CACHE_TIME))
 
+log.info('Cleaning cache...')
+uuid_locks = r.keys('{}:cache*'.format(AGENT_ID))
+for ulk in uuid_locks:
+    r.delete(ulk)
+
 
 def load_stream_triples(fid, until):
     def __triplify(x):
         def __extract_lang(v):
             if '@' in v:
-                (v, lang) = tuple(v.split('@'))
+                try:
+                    (v, lang) = tuple(v.split('@'))
+                except ValueError:
+                    lang = None
             else:
                 lang = None
             return v, lang
@@ -109,7 +117,7 @@ class GraphProvider(object):
         self.__graph_dict = {}
         self.__uuid_dict = {}
         self.__gid_uuid_dict = {}
-        self.__lock = RLock()
+        self.__lock = Lock()
         self.__cache_key = '{}:cache'.format(AGENT_ID)
         self.__gids_key = '{}:gids'.format(self.__cache_key)
 
@@ -118,6 +126,11 @@ class GraphProvider(object):
     @staticmethod
     def __clean(name):
         shutil.rmtree('store/resources/{}'.format(name))
+
+    @staticmethod
+    def uuid_lock(uuid):
+        lock_key = '{}:cache:{}:lock'.format(AGENT_ID, uuid)
+        return r.lock(lock_key, lock_class=RedisLock)
 
     def __purge(self):
         while True:
@@ -131,23 +144,28 @@ class GraphProvider(object):
                         p.multi()
                         log.info('Removing {} resouces from cache...'.format(len(obsolete)))
                         for uuid in obsolete:
-                            gid = r.hget(self.__gids_key, uuid)
-                            usage_counter = r.get('{}:cache:{}:cnt'.format(AGENT_ID, uuid))
-                            if usage_counter is None or int(usage_counter) <= 0:
-                                try:
-                                    resources_cache.remove_context(resources_cache.get_context(uuid))
-                                    p.srem(self.__cache_key, uuid)
-                                    p.hdel(self.__gids_key, uuid)
-                                    p.hdel(self.__gids_key, gid)
-                                    g = self.__uuid_dict[uuid]
-                                    del self.__uuid_dict[uuid]
-                                    del self.__graph_dict[g]
-                                except Exception, e:
-                                    traceback.print_exc()
-                                    print r.sismember(self.__cache_key, uuid)
-                                    print self.__gid_uuid_dict
-                                    log.error('Purging resource {} with uuid {}'.format(gid, uuid))
-                            p.execute()
+                            uuid_lock = self.uuid_lock(uuid)
+                            uuid_lock.acquire()
+                            try:
+                                gid = r.hget(self.__gids_key, uuid)
+                                counter_key = '{}:cache:{}:cnt'.format(AGENT_ID, uuid)
+                                usage_counter = r.get(counter_key)
+                                if usage_counter is None or int(usage_counter) <= 0:
+                                    try:
+                                        resources_cache.remove_context(resources_cache.get_context(uuid))
+                                        p.srem(self.__cache_key, uuid)
+                                        p.hdel(self.__gids_key, uuid)
+                                        p.hdel(self.__gids_key, gid)
+                                        p.delete(counter_key)
+                                        g = self.__uuid_dict[uuid]
+                                        del self.__uuid_dict[uuid]
+                                        del self.__graph_dict[g]
+                                    except Exception, e:
+                                        traceback.print_exc()
+                                        log.error('Purging resource {} with uuid {}'.format(gid, uuid))
+                                p.execute()
+                            finally:
+                                uuid_lock.release()
             except Exception, e:
                 traceback.print_exc()
                 log.error(e.message)
@@ -155,8 +173,10 @@ class GraphProvider(object):
                 self.__lock.release()
             sleep(10)
 
-    def create(self, conjunctive=False, gid=None):
+    def create(self, conjunctive=False, gid=None, loader=None, format=None):
         self.__lock.acquire()
+        uuid_lock = None
+        cached = False
         try:
             uuid = shortuuid.uuid()
 
@@ -167,41 +187,78 @@ class GraphProvider(object):
                 else:
                     g = ConjunctiveGraph()
                 g.store.graph_aware = False
+                self.__graph_dict[g] = uuid
+                self.__uuid_dict[uuid] = g
+                return g
             else:
-                post_ts = dt.now()
-                elapsed = (post_ts - self.__last_creation_ts).total_seconds()
-                throttling = (1.0 / GRAPH_THROTTLING) - elapsed
-                if throttling > 0:
-                    sleep(throttling)
-
                 g = resources_cache.get_context(uuid)
                 try:
                     if gid is not None:
+                        st_uuid = r.hget(self.__gids_key, gid)
+                        if st_uuid is not None:
+                            cached = True
+                            uuid = st_uuid
+                            uuid_lock = self.uuid_lock(uuid)
+                            uuid_lock.acquire()
+                            g = self.__uuid_dict[uuid]
+                            uuid_lock.release()
+                        else:
+                            post_ts = dt.now()
+                            elapsed = (post_ts - self.__last_creation_ts).total_seconds()
+                            throttling = (1.0 / GRAPH_THROTTLING) - elapsed
+                            if throttling > 0:
+                                sleep(throttling)
+
+                        temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
+                        counter_key = '{}:cnt'.format(temp_key)
+                        ttl = MIN_CACHE_TIME + int(10 * random())
+                        ttl_ts = calendar.timegm((dt.now() + datetime.timedelta(ttl)).timetuple())
+
                         with r.pipeline(transaction=True) as p:
-                            temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
-                            ttl = MIN_CACHE_TIME + int(10 * random())
-                            ttl_ts = calendar.timegm((dt.now() + datetime.timedelta(ttl)).timetuple())
                             p.multi()
-                            p.sadd(self.__cache_key, uuid)
-                            p.hset(self.__gids_key, uuid, gid)
-                            p.hset(self.__gids_key, gid, uuid)
-                            p.set(temp_key, ttl_ts)
-                            counter_key = '{}:cnt'.format(temp_key)
-                            p.delete(counter_key)
+                            if st_uuid is None:
+                                p.delete(counter_key)
+                                p.sadd(self.__cache_key, uuid)
+                                p.hset(self.__gids_key, uuid, gid)
+                                p.hset(self.__gids_key, gid, uuid)
+                                self.__last_creation_ts = dt.now()
                             p.incr(counter_key)
+                            p.set(temp_key, ttl_ts)
                             p.expire(temp_key, ttl)
                             p.execute()
-                    self.__last_creation_ts = dt.now()
+                        uuid_lock = self.uuid_lock(uuid)
+                        uuid_lock.acquire()
                 except Exception, e:
                     log.error(e.message)
                     traceback.print_exc()
             self.__graph_dict[g] = uuid
             self.__uuid_dict[uuid] = g
-            return g
         finally:
             self.__lock.release()
 
-    def destroy(self, g):
+        try:
+            if cached:
+                return g
+
+            source = loader(gid, format)
+            if not isinstance(source, bool):
+                g.parse(source=source, format=format)
+                return g
+            else:
+                with r.pipeline(transaction=True) as p:
+                    p.hdel(self.__gids_key, gid)
+                    p.hdel(self.__gids_key, uuid)
+                    p.srem(self.__cache_key, uuid)
+                    counter_key = '{}:cache:{}:cnt'.format(AGENT_ID, uuid)
+                    p.delete(counter_key)
+                    p.execute()
+                del self.__graph_dict[g]
+                del self.__uuid_dict[uuid]
+                return source
+        finally:
+            uuid_lock.release()
+
+    def release(self, g):
         self.__lock.acquire()
         try:
             if g in self.__graph_dict:
@@ -220,33 +277,12 @@ class GraphProvider(object):
                     else:
                         r.decr('{}:cache:{}:cnt'.format(AGENT_ID, uuid))
                         removed = False
+                        # The graph will be purged
 
                 if removed:
                     uuid = self.__graph_dict[g]
                     del self.__graph_dict[g]
                     del self.__uuid_dict[uuid]
-        finally:
-            self.__lock.release()
-
-    def open(self, gid):
-        self.__lock.acquire()
-        try:
-            uuid = r.hget(self.__gids_key, gid)
-            if uuid is not None:
-                temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
-                try:
-                    ttl_ts = int(r.get(temp_key))
-                    now_ts = calendar.timegm(dt.now().timetuple())
-                    rest = ttl_ts - now_ts
-                    if rest < 1:
-                        return None
-                    else:
-                        r.incr('{}:cache:{}:cnt'.format(AGENT_ID, uuid))
-                        return self.__uuid_dict[uuid]
-                except TypeError:
-                    # ttl_ts is None!
-                    pass
-            return None
         finally:
             self.__lock.release()
 
