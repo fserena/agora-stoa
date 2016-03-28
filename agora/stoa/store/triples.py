@@ -250,16 +250,20 @@ class GraphProvider(object):
                 g.parse(source=source, format=format)
                 return g
             else:
-                with r.pipeline(transaction=True) as p:
-                    p.hdel(self.__gids_key, gid)
-                    p.hdel(self.__gids_key, uuid)
-                    p.srem(self.__cache_key, uuid)
-                    counter_key = '{}:cache:{}:cnt'.format(AGENT_ID, uuid)
-                    p.delete(counter_key)
-                    p.execute()
-                del self.__graph_dict[g]
-                del self.__uuid_dict[uuid]
-                return source
+                self.__lock.acquire()
+                try:
+                    with r.pipeline(transaction=True) as p:
+                        p.hdel(self.__gids_key, gid)
+                        p.hdel(self.__gids_key, uuid)
+                        p.srem(self.__cache_key, uuid)
+                        counter_key = '{}:cache:{}:cnt'.format(AGENT_ID, uuid)
+                        p.delete(counter_key)
+                        p.execute()
+                    del self.__graph_dict[g]
+                    del self.__uuid_dict[uuid]
+                    return source
+                finally:
+                    self.__lock.release()
         finally:
             uuid_lock.release()
 
