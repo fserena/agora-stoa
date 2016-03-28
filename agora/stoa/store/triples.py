@@ -40,6 +40,7 @@ from agora.stoa.server import app
 from agora.stoa.store import r
 from concurrent.futures import ThreadPoolExecutor
 from rdflib import ConjunctiveGraph, URIRef, Literal, XSD, BNode
+import re
 
 __author__ = 'Fernando Serena'
 
@@ -62,9 +63,13 @@ for ulk in uuid_locks:
 def load_stream_triples(fid, until):
     def __triplify(x):
         def __extract_lang(v):
+            def __lang_tag_match(strg, search=re.compile(r'[^a-z]').search):
+                return not bool(search(strg))
+
             if '@' in v:
                 try:
-                    (v, lang) = tuple(v.split('@'))
+                    (v_aux, lang) = tuple(v.split('@'))
+                    (v, lang) = (v_aux, lang) if __lang_tag_match(lang) else (v, None)
                 except ValueError:
                     lang = None
             else:
