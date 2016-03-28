@@ -182,6 +182,9 @@ class GraphProvider(object):
         self.__lock.acquire()
         uuid_lock = None
         cached = False
+        p = r.pipeline(transaction=True)
+        p.multi()
+
         try:
             uuid = shortuuid.uuid()
 
@@ -219,18 +222,15 @@ class GraphProvider(object):
                         ttl = MIN_CACHE_TIME + int(10 * random())
                         ttl_ts = calendar.timegm((dt.now() + datetime.timedelta(ttl)).timetuple())
 
-                        with r.pipeline(transaction=True) as p:
-                            p.multi()
-                            if st_uuid is None:
-                                p.delete(counter_key)
-                                p.sadd(self.__cache_key, uuid)
-                                p.hset(self.__gids_key, uuid, gid)
-                                p.hset(self.__gids_key, gid, uuid)
-                                self.__last_creation_ts = dt.now()
-                            p.incr(counter_key)
-                            p.set(temp_key, ttl_ts)
-                            p.expire(temp_key, ttl)
-                            p.execute()
+                        if st_uuid is None:
+                            p.delete(counter_key)
+                            p.sadd(self.__cache_key, uuid)
+                            p.hset(self.__gids_key, uuid, gid)
+                            p.hset(self.__gids_key, gid, uuid)
+                            self.__last_creation_ts = dt.now()
+                        p.incr(counter_key)
+                        p.set(temp_key, ttl_ts)
+                        p.expire(temp_key, ttl)
                         uuid_lock = self.uuid_lock(uuid)
                         uuid_lock.acquire()
                 except Exception, e:
@@ -250,21 +250,17 @@ class GraphProvider(object):
                 g.parse(source=source, format=format)
                 return g
             else:
-                self.__lock.acquire()
-                try:
-                    with r.pipeline(transaction=True) as p:
-                        p.hdel(self.__gids_key, gid)
-                        p.hdel(self.__gids_key, uuid)
-                        p.srem(self.__cache_key, uuid)
-                        counter_key = '{}:cache:{}:cnt'.format(AGENT_ID, uuid)
-                        p.delete(counter_key)
-                        p.execute()
-                    del self.__graph_dict[g]
-                    del self.__uuid_dict[uuid]
-                    return source
-                finally:
-                    self.__lock.release()
+                p.hdel(self.__gids_key, gid)
+                p.hdel(self.__gids_key, uuid)
+                p.srem(self.__cache_key, uuid)
+                counter_key = '{}:cache:{}:cnt'.format(AGENT_ID, uuid)
+                p.delete(counter_key)
+                p.execute()
+                del self.__graph_dict[g]
+                del self.__uuid_dict[uuid]
+                return source
         finally:
+            p.execute()
             uuid_lock.release()
 
     def release(self, g):
