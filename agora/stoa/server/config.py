@@ -36,10 +36,13 @@ def _api_port():
 def _agent_id():
     aid = os.environ.get('AGENT_ID')
     if not aid:
-        with file('.AGENT_ID', mode='r') as f:
-            aid = f.readline()
+        try:
+            with file('.AGENT_ID', mode='r') as f:
+                aid = f.readline()
+        except IOError:
+            pass
         if not aid:
-            aid = uuid.uuid4()
+            aid = str(uuid.uuid4())
     with file('.AGENT_ID', mode='w') as f:
         f.write(aid)
     return aid
