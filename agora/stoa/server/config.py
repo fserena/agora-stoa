@@ -34,7 +34,15 @@ def _api_port():
 
 
 def _agent_id():
-    return os.environ.get('AGENT_ID', uuid.uuid4())
+    aid = os.environ.get('AGENT_ID')
+    if not aid:
+        with file('.AGENT_ID', mode='r') as f:
+            aid = f.readline()
+        if not aid:
+            aid = uuid.uuid4()
+    with file('.AGENT_ID', mode='w') as f:
+        f.write(aid)
+    return aid
 
 
 def _redis_conf(def_host, def_port, def_db):
