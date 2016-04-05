@@ -354,6 +354,7 @@ class FragmentSink(DeliverySink):
         Loads data relating to the recovery of a fragment for this request
         """
         super(FragmentSink, self)._load()
+        self._fragment_key = self.__f_key_pattern.format(self.fragment_id)
         self._graph_pattern = GraphPattern(r.smembers('{}gp'.format(self._request_key)))
         self._fragment_pattern = GraphPattern(r.smembers('{}:gp'.format(self._fragment_key)))
         self._filter_mapping = r.hgetall('{}filters'.format(self._request_key))
