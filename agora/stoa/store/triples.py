@@ -58,6 +58,9 @@ log.info('Cleaning cache...')
 uuid_locks = r.keys('{}:cache*'.format(AGENT_ID))
 for ulk in uuid_locks:
     r.delete(ulk)
+uuid_locks = r.keys('{}:cache*cnt'.format(AGENT_ID))
+for ulk in uuid_locks:
+    r.delete(ulk)
 
 
 def load_stream_triples(fid, until):
@@ -227,8 +230,11 @@ class GraphProvider(object):
 
                         temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
                         counter_key = '{}:cnt'.format(temp_key)
-                        ttl = MIN_CACHE_TIME + int(10 * random())
-                        ttl_ts = calendar.timegm((dt.now() + datetime.timedelta(ttl)).timetuple())
+                        if not r.exists(temp_key):
+                            ttl = MIN_CACHE_TIME + int(2 * random())
+                            ttl_ts = calendar.timegm((dt.now() + datetime.timedelta(ttl)).timetuple())
+                            p.set(temp_key, ttl_ts)
+                            p.expire(temp_key, ttl)
 
                         if st_uuid is None:
                             p.delete(counter_key)
@@ -236,9 +242,7 @@ class GraphProvider(object):
                             p.hset(self.__gids_key, uuid, gid)
                             p.hset(self.__gids_key, gid, uuid)
                             self.__last_creation_ts = dt.now()
-                        p.incr(counter_key)
-                        p.set(temp_key, ttl_ts)
-                        p.expire(temp_key, ttl)
+                            p.incr(counter_key)
                         uuid_lock = self.uuid_lock(uuid)
                         uuid_lock.acquire()
                 except Exception, e:
