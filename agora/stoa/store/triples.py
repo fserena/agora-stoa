@@ -99,6 +99,13 @@ def load_stream_triples(fid, until):
         yield __triplify(x)
 
 
+def clear_fragment_stream(fid):
+    stream_key = '{}:fragments:{}:stream'.format(AGENT_ID, fid)
+    with r.pipeline() as pipe:
+        pipe.delete(stream_key)
+        pipe.execute()
+
+
 def add_stream_triple(fid, tp, (s, p, o), timestamp=None):
     try:
         if timestamp is None:
@@ -111,7 +118,7 @@ def add_stream_triple(fid, tp, (s, p, o), timestamp=None):
                 pipe.zadd(stream_key, timestamp, quad)
                 pipe.execute()
         return not_found
-    except Exception, e:
+    except Exception as e:
         traceback.print_exc()
         log.error(e.message)
 
@@ -215,6 +222,7 @@ class GraphProvider(object):
                             elapsed = (post_ts - self.__last_creation_ts).total_seconds()
                             throttling = (1.0 / GRAPH_THROTTLING) - elapsed
                             if throttling > 0:
+                                print('waiting for {}'.format(throttling))
                                 sleep(throttling)
 
                         temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)

@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 """
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
   This file is part of the Smart Developer Hub Project:
@@ -34,12 +36,15 @@ from agora.stoa.server import app
 from agora.stoa.store import r
 from rdflib import Literal, URIRef
 from shortuuid import uuid
+from datetime import datetime as dt, timedelta as delta
+import sys
 
 __author__ = 'Fernando Serena'
 
 log = logging.getLogger('agora.stoa.actions.fragment')
 agora_conf = app.config['AGORA']
 PASS_THRESHOLD = app.config['BEHAVIOUR']['pass_threshold']
+MIN_SYNC_TIME = app.config['PARAMS']['min_sync_time']
 agora_client = Agora(**agora_conf)
 fragment_locks = {}
 
@@ -73,7 +78,7 @@ class FragmentRequest(DeliveryRequest):
             prefixes = agora_client.prefixes
             for p in prefixes:
                 self.__request_graph.bind(p, prefixes[p])
-        except Exception, e:
+        except Exception as e:
             raise EnvironmentError(e.message)
 
     def _extract_content(self, request_type=None):
@@ -99,6 +104,25 @@ class FragmentRequest(DeliveryRequest):
         self.__build_graph_pattern()
 
         log.debug('Extracted (fragment) pattern graph:\n{}'.format(self.__request_graph.serialize(format='turtle')))
+
+        q_res = self._graph.query("""SELECT ?r ?ud ?ag WHERE {
+                                ?r stoa:expectedUpdatingDelay ?ud .
+                                ?r stoa:allowGeneralisation ?ag
+                             }""")
+        q_res = list(q_res)
+        if len(q_res) > 1:
+            raise SyntaxError('Wrong number of parameters were defined')
+        try:
+
+            parent_node, updating_delay, allow_gen = q_res.pop()
+            if parent_node != self._request_node:
+                raise SyntaxError('Invalid parent node for stoa:expectedUpdatingDelay')
+            if updating_delay is not None:
+                self._fields['updating_delay'] = updating_delay.toPython()
+            if allow_gen is not None:
+                self._fields['allow_gen'] = allow_gen.toPython()
+        except IndexError:
+            pass
 
     def __n3(self, elm):
         """
@@ -203,6 +227,14 @@ class FragmentRequest(DeliveryRequest):
             label = label.toPython()
         return label
 
+    @property
+    def updating_delay(self):
+        return self._fields.get('updating_delay', None)
+
+    @property
+    def allow_generalisation(self):
+        return self._fields.get('allow_gen', True)
+
 
 class FragmentAction(DeliveryAction):
     __metaclass__ = ABCMeta
@@ -280,6 +312,16 @@ class FragmentSink(DeliverySink):
 
         super(FragmentSink, self)._save(action)
 
+        # Override general parameter
+        general = general and action.request.allow_generalisation
+
+        # Fragment collection parameters
+        requested_updating_delay = action.request.updating_delay
+        if action.request.updating_delay is None:
+            requested_updating_delay = MIN_SYNC_TIME
+        self._pipe.hset(self._request_key, 'updating_delay', requested_updating_delay)
+        self._pipe.hset(self._request_key, 'allow_generalisation', action.request.allow_generalisation)
+
         # Recover pattern from the request object
         self._graph_pattern = action.request.pattern
 
@@ -318,9 +360,19 @@ class FragmentSink(DeliverySink):
         if action.request.preferred_labels:
             self._pipe.sadd('{}pl'.format(self._request_key), *action.request.preferred_labels)
         self._pipe.sadd('{}:requests'.format(self._fragment_key), self._request_id)
-        self._pipe.hset('{}'.format(self._request_key), 'fragment_id', fragment_id)
+        self._pipe.hset(self._request_key, 'fragment_id', fragment_id)
         self._pipe.sadd('{}gp'.format(self._request_key), *self._graph_pattern)
-        self._pipe.hset('{}'.format(self._request_key), 'pattern', ' . '.join(self._graph_pattern))
+        self._pipe.hset(self._request_key, 'pattern', ' . '.join(self._graph_pattern))
+
+        # Update collection parameters
+        current_updated = r.get('{}:updated'.format(self._fragment_key))
+        if current_updated is not None:
+            current_updated = dt.utcfromtimestamp(float(current_updated))
+            if dt.now() - delta(seconds=requested_updating_delay) <= current_updated:
+                self._pipe.delete('{}:sync'.format(self._fragment_key))
+        current_updating_delay = int(r.get('{}:ud'.format(self._fragment_key))) if exists else sys.maxint
+        if current_updating_delay > requested_updating_delay:
+            self._pipe.set('{}:ud'.format(self._fragment_key), requested_updating_delay)
 
         # Populate attributes that may be required during the rest of the submission process
         self._dict_fields['mapping'] = mapping
@@ -360,6 +412,8 @@ class FragmentSink(DeliverySink):
         self._filter_mapping = r.hgetall('{}filters'.format(self._request_key))
         self._dict_fields['mapping'] = r.hgetall('{}map'.format(self._request_key))
         self._dict_fields['preferred_labels'] = set(r.smembers('{}pl'.format(self._request_key)))
+        if 'updating_delay' in self._dict_fields:
+            self._dict_fields['updating_delay'] = float(self.updating_delay)
 
     def map(self, v, fmap=False):
         """
