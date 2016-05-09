@@ -106,23 +106,25 @@ class FragmentRequest(DeliveryRequest):
         log.debug('Extracted (fragment) pattern graph:\n{}'.format(self.__request_graph.serialize(format='turtle')))
 
         q_res = self._graph.query("""SELECT ?r ?ud ?ag WHERE {
-                                ?r stoa:expectedUpdatingDelay ?ud .
-                                ?r stoa:allowGeneralisation ?ag
+                                OPTIONAL { ?r stoa:expectedUpdatingDelay ?ud }
+                                OPTIONAL { ?r stoa:allowGeneralisation ?ag }
                              }""")
         q_res = list(q_res)
         if len(q_res) > 1:
             raise SyntaxError('Wrong number of parameters were defined')
-        try:
 
-            parent_node, updating_delay, allow_gen = q_res.pop()
-            if parent_node != self._request_node:
-                raise SyntaxError('Invalid parent node for stoa:expectedUpdatingDelay')
-            if updating_delay is not None:
-                self._fields['updating_delay'] = updating_delay.toPython()
-            if allow_gen is not None:
-                self._fields['allow_gen'] = allow_gen.toPython()
-        except IndexError:
-            pass
+        fragment_params = q_res.pop()
+        if any(fragment_params):
+            try:
+                parent_node, updating_delay, allow_gen = fragment_params
+                if parent_node != self._request_node:
+                    raise SyntaxError('Invalid parent node for stoa:expectedUpdatingDelay')
+                if updating_delay is not None:
+                    self._fields['updating_delay'] = updating_delay.toPython()
+                if allow_gen is not None:
+                    self._fields['allow_gen'] = allow_gen.toPython()
+            except IndexError:
+                pass
 
     def __n3(self, elm):
         """
