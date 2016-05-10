@@ -186,7 +186,7 @@ class GraphProvider(object):
                 log.error(e.message)
             finally:
                 self.__lock.release()
-            sleep(10)
+            sleep(1)
 
     def create(self, conjunctive=False, gid=None, loader=None, format=None):
         self.__lock.acquire()
@@ -241,6 +241,7 @@ class GraphProvider(object):
                             p.sadd(self.__cache_key, uuid)
                             p.hset(self.__gids_key, uuid, gid)
                             p.hset(self.__gids_key, gid, uuid)
+                            p.execute()
                             self.__last_creation_ts = dt.now()
                             p.incr(counter_key)
                         uuid_lock = self.uuid_lock(uuid)
