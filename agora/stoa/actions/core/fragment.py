@@ -1,5 +1,7 @@
 from __future__ import print_function
 
+import calendar
+
 """
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
   This file is part of the Smart Developer Hub Project:
@@ -36,7 +38,7 @@ from agora.stoa.server import app
 from agora.stoa.store import r
 from rdflib import Literal, URIRef
 from shortuuid import uuid
-from datetime import datetime as dt, timedelta as delta
+from datetime import datetime as dt, timedelta as delta, datetime
 import sys
 
 __author__ = 'Fernando Serena'
@@ -370,11 +372,16 @@ class FragmentSink(DeliverySink):
         current_updated = r.get('{}:updated'.format(self._fragment_key))
         if current_updated is not None:
             current_updated = dt.utcfromtimestamp(float(current_updated))
-            if dt.now() - delta(seconds=requested_updating_delay) <= current_updated:
+            if dt.now() - delta(seconds=requested_updating_delay) > current_updated:
+                self._pipe.delete('{}:updated'.format(self._fragment_key))
                 self._pipe.delete('{}:sync'.format(self._fragment_key))
         current_updating_delay = int(r.get('{}:ud'.format(self._fragment_key))) if exists else sys.maxint
         if current_updating_delay > requested_updating_delay:
             self._pipe.set('{}:ud'.format(self._fragment_key), requested_updating_delay)
+
+        # Update fragment request history
+        self._pipe.lpush('{}:hist'.format(self._fragment_key), calendar.timegm(datetime.now().timetuple()))
+        self._pipe.ltrim('{}:hist'.format(self._fragment_key), 0, 3)
 
         # Populate attributes that may be required during the rest of the submission process
         self._dict_fields['mapping'] = mapping
