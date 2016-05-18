@@ -40,26 +40,37 @@ from rdflib import Literal, URIRef
 from shortuuid import uuid
 from datetime import datetime as dt, timedelta as delta, datetime
 import sys
+from redis.lock import Lock
 
 __author__ = 'Fernando Serena'
 
-log = logging.getLogger('agora.stoa.actions.fragment')
-agora_conf = app.config['AGORA']
+_log = logging.getLogger('agora.stoa.actions.fragment')
+_agora_conf = app.config['AGORA']
 PASS_THRESHOLD = app.config['BEHAVIOUR']['pass_threshold']
 MIN_SYNC_TIME = app.config['PARAMS']['min_sync_time']
-agora_client = Agora(**agora_conf)
-fragment_locks = {}
+_agora_client = Agora(**_agora_conf)
 
 # Ping Agora
 try:
-    _ = agora_client.prefixes
+    _ = _agora_client.prefixes
 except Exception:
-    log.warning('Agora is not currently available at {}'.format(agora_conf))
+    _log.warning('Agora is not currently available at {}'.format(_agora_conf))
 else:
-    log.info('Connected to Agora: {}'.format(agora_conf))
+    _log.info('Connected to Agora: {}'.format(_agora_conf))
 
-log.info("""Behaviour parameters:
+_log.info("""Behaviour parameters:
                     - Pass threshold: {}""".format(PASS_THRESHOLD))
+
+fragments_key = '{}:fragments'.format(AGENT_ID)
+
+
+def fragment_lock(fid):
+    """
+    :param fid: Fragment id
+    :return: A redis-based lock object for a given fragment
+    """
+    lock_key = '{}:{}:lock'.format(fragments_key, fid)
+    return r.lock(lock_key, lock_class=Lock)
 
 
 class FragmentRequest(DeliveryRequest):
@@ -77,7 +88,7 @@ class FragmentRequest(DeliveryRequest):
 
         # Copy Agora prefixes to the pattern graph
         try:
-            prefixes = agora_client.prefixes
+            prefixes = _agora_client.prefixes
             for p in prefixes:
                 self.__request_graph.bind(p, prefixes[p])
         except Exception as e:
@@ -90,7 +101,7 @@ class FragmentRequest(DeliveryRequest):
         variables = set(self._graph.subjects(RDF.type, STOA.Variable))
         if not variables:
             raise SyntaxError('There are no variables specified for this request')
-        log.debug(
+        _log.debug(
             'Found {} variables in the the fragment pattern'.format(len(variables)))
 
         # Secondly, try to identify all links between variables (avoiding cycles)
@@ -105,7 +116,7 @@ class FragmentRequest(DeliveryRequest):
         # Finally, an Agora-compliant Graph Pattern is created and offered as a property
         self.__build_graph_pattern()
 
-        log.debug('Extracted (fragment) pattern graph:\n{}'.format(self.__request_graph.serialize(format='turtle')))
+        _log.debug('Extracted (fragment) pattern graph:\n{}'.format(self.__request_graph.serialize(format='turtle')))
 
         q_res = self._graph.query("""SELECT ?r ?ud ?ag WHERE {
                                 OPTIONAL { ?r stoa:expectedUpdatingDelay ?ud }
@@ -153,7 +164,7 @@ class FragmentRequest(DeliveryRequest):
             if condition:
                 if triple not in self.__request_graph:
                     self.__request_graph.add(triple)
-                    log.debug('New pattern link: {}'.format(triple))
+                    _log.debug('New pattern link: {}'.format(triple))
             return condition
 
         if visited is None:
@@ -344,56 +355,70 @@ class FragmentSink(DeliverySink):
         if action.id in self.passed_requests:
             self.passed_requests.remove(action.id)
 
-        if not exists:
-            # If there is no mapping, register a new fragment collection for the general graph pattern
-            fragment_id = str(uuid())
-            self._fragment_key = self.__f_key_pattern.format(fragment_id)
-            self._pipe.sadd(self._fragments_key, fragment_id)
-            self._pipe.sadd('{}:gp'.format(self._fragment_key), *effective_gp)
-            mapping = {str(k): str(k) for k in action.request.variable_labels}
-            mapping.update({str(k): str(k) for k in self._filter_mapping})
-        else:
-            fragment_id, mapping = fragment_mapping
-            self._fragment_key = self.__f_key_pattern.format(fragment_id)
-            # Remove the sync state if the fragment is on-demand mode
-            if r.get('{}:on_demand'.format(self._fragment_key)) is not None:
-                self._pipe.delete('{}:sync'.format(self._fragment_key))
+        lock = None
+        try:
+            if not exists:
+                # If there is no mapping, register a new fragment collection for the general graph pattern
+                fragment_id = str(uuid())
+                self._fragment_key = self.__f_key_pattern.format(fragment_id)
+                self._pipe.sadd(self._fragments_key, fragment_id)
+                self._pipe.sadd('{}:gp'.format(self._fragment_key), *effective_gp)
+                mapping = {str(k): str(k) for k in action.request.variable_labels}
+                mapping.update({str(k): str(k) for k in self._filter_mapping})
+            else:
+                fragment_id, mapping = fragment_mapping
+                self._fragment_key = self.__f_key_pattern.format(fragment_id)
+                lock = fragment_lock(fragment_id)
+                lock.acquire()
+                # Remove the sync state if the fragment is on-demand mode
+                if r.get('{}:on_demand'.format(self._fragment_key)) is not None:
+                    self._pipe.delete('{}:sync'.format(self._fragment_key))
 
-        # Here the following is persisted: mapping, pref_labels, fragment-request links and the original graph_pattern
-        self._pipe.hmset('{}map'.format(self._request_key), mapping)
-        if action.request.preferred_labels:
-            self._pipe.sadd('{}pl'.format(self._request_key), *action.request.preferred_labels)
-        self._pipe.sadd('{}:requests'.format(self._fragment_key), self._request_id)
-        self._pipe.hset(self._request_key, 'fragment_id', fragment_id)
-        self._pipe.sadd('{}gp'.format(self._request_key), *self._graph_pattern)
-        self._pipe.hset(self._request_key, 'pattern', ' . '.join(self._graph_pattern))
+            # Here the following is persisted: mapping, pref_labels, fragment-request links and the original
+            # graph_pattern
+            self._pipe.hmset('{}map'.format(self._request_key), mapping)
+            if action.request.preferred_labels:
+                self._pipe.sadd('{}pl'.format(self._request_key), *action.request.preferred_labels)
+            self._pipe.sadd('{}:requests'.format(self._fragment_key), self._request_id)
+            self._pipe.hset(self._request_key, 'fragment_id', fragment_id)
+            self._pipe.sadd('{}gp'.format(self._request_key), *self._graph_pattern)
+            self._pipe.hset(self._request_key, 'pattern', ' . '.join(self._graph_pattern))
 
-        # Update collection parameters
-        current_updated = r.get('{}:updated'.format(self._fragment_key))
-        if current_updated is not None:
-            current_updated = dt.utcfromtimestamp(float(current_updated))
-            if dt.now() - delta(seconds=requested_updating_delay) > current_updated:
-                self._pipe.delete('{}:updated'.format(self._fragment_key))
-                self._pipe.delete('{}:sync'.format(self._fragment_key))
-        current_updating_delay = int(r.get('{}:ud'.format(self._fragment_key))) if exists else sys.maxint
-        if current_updating_delay > requested_updating_delay:
-            self._pipe.set('{}:ud'.format(self._fragment_key), requested_updating_delay)
+            # Update collection parameters
+            fragment_synced = True
+            current_updated = r.get('{}:updated'.format(self._fragment_key))
+            if current_updated is not None:
+                current_updated = dt.utcfromtimestamp(float(current_updated))
+                if dt.utcnow() - delta(seconds=requested_updating_delay) > current_updated:
+                    self._pipe.delete('{}:updated'.format(self._fragment_key))
+                    self._pipe.delete('{}:sync'.format(self._fragment_key))
+                    fragment_synced = False
 
-        # Update fragment request history
-        self._pipe.lpush('{}:hist'.format(self._fragment_key), calendar.timegm(datetime.now().timetuple()))
-        self._pipe.ltrim('{}:hist'.format(self._fragment_key), 0, 3)
+            current_updating_delay = int(
+                r.get('{}:ud'.format(self._fragment_key))) if exists and fragment_synced else sys.maxint
+            if current_updating_delay > requested_updating_delay:
+                self._pipe.set('{}:ud'.format(self._fragment_key), requested_updating_delay)
 
-        # Populate attributes that may be required during the rest of the submission process
-        self._dict_fields['mapping'] = mapping
-        self._dict_fields['preferred_labels'] = action.request.preferred_labels
-        self._dict_fields['fragment_id'] = fragment_id
+            # Update fragment request history
+            if not fragment_synced:
+                self._pipe.delete('{}:hist'.format(self._fragment_key))
+            self._pipe.lpush('{}:hist'.format(self._fragment_key), calendar.timegm(datetime.utcnow().timetuple()))
+            self._pipe.ltrim('{}:hist'.format(self._fragment_key), 0, 3)
 
-        if not exists:
-            log.info('Request {} has started a new fragment collection: {}'.format(self._request_id, fragment_id))
-        else:
-            log.info('Request {} is going to re-use fragment {}'.format(self._request_id, fragment_id))
-            n_fragment_reqs = r.scard('{}:requests'.format(self._fragment_key))
-            log.info('Fragment {} is supporting {} more requests'.format(fragment_id, n_fragment_reqs))
+            # Populate attributes that may be required during the rest of the submission process
+            self._dict_fields['mapping'] = mapping
+            self._dict_fields['preferred_labels'] = action.request.preferred_labels
+            self._dict_fields['fragment_id'] = fragment_id
+
+            if not exists:
+                _log.info('Request {} has started a new fragment collection: {}'.format(self._request_id, fragment_id))
+            else:
+                _log.info('Request {} is going to re-use fragment {}'.format(self._request_id, fragment_id))
+                n_fragment_reqs = r.scard('{}:requests'.format(self._fragment_key))
+                _log.info('Fragment {} is supporting {} more requests'.format(fragment_id, n_fragment_reqs))
+        finally:
+            if lock is not None:
+                lock.release()
 
     @abstractmethod
     def _remove(self, pipe):

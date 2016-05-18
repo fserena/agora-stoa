@@ -31,17 +31,17 @@ from importlib import import_module
 
 __author__ = 'Fernando Serena'
 
-log_level = int(os.environ.get('LOG_LEVEL', logging.INFO))
-if log_level is None:
-    log_level = int(app.config['LOG'])
+__log_level = int(os.environ.get('LOG_LEVEL', logging.INFO))
+if __log_level is None:
+    __log_level = int(app.config['LOG'])
 
-ch = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-ch.setLevel(log_level)
-logger = logging.getLogger('agora')
-logger.addHandler(ch)
-logger.setLevel(log_level)
+__ch = logging.StreamHandler()
+__formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+__ch.setFormatter(__formatter)
+__ch.setLevel(__log_level)
+__logger = logging.getLogger('agora')
+__logger.addHandler(__ch)
+__logger.setLevel(__log_level)
 
 
 def bootstrap(config=None, modules=None, metadata_pkg=None, logger_name=None, api_ext=None):

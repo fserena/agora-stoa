@@ -40,9 +40,9 @@ from rdflib import BNode, Literal, RDFS
 __author__ = 'Fernando Serena'
 
 EXCHANGE_CONFIG = app.config['EXCHANGE']
-exchange = EXCHANGE_CONFIG['exchange']
+_exchange = EXCHANGE_CONFIG['exchange']
 response_rk = EXCHANGE_CONFIG['response_rk']
-log = logging.getLogger('agora.stoa.actions.delivery')
+_log = logging.getLogger('agora.stoa.actions.delivery')
 LIT_AGENT_ID = Literal(AGENT_ID, datatype=TYPES.UUID)
 
 
@@ -90,7 +90,7 @@ def build_reply(template, reply_to, comment=None):
             reply_graph.add((s, p, o))
 
     reply_graph.add((root_node, STOA.responseTo, Literal(reply_to, datatype=TYPES.UUID)))
-    reply_graph.set((root_node, STOA.submittedOn, Literal(datetime.now())))
+    reply_graph.set((root_node, STOA.submittedOn, Literal(datetime.utcnow())))
     reply_graph.set((root_node, STOA.messageId, Literal(str(uuid.uuid4()), datatype=TYPES.UUID)))
     if comment is not None:
         reply_graph.set((root_node, RDFS.comment, Literal(comment, datatype=XSD.string)))
@@ -101,7 +101,7 @@ def build_reply(template, reply_to, comment=None):
 
 # Create both accept and failure templates
 accepted_template, failure_template = _build_reply_templates()
-log.info('Basic delivery templates created')
+_log.info('Basic delivery templates created')
 
 
 class DeliveryRequest(Request):
@@ -146,7 +146,7 @@ class DeliveryRequest(Request):
          delivery_data['host'],
          delivery_data['port'],
          delivery_data['vhost']) = request_fields[1:]
-        log.debug("""Parsed attributes of a delivery action request:
+        _log.debug("""Parsed attributes of a delivery action request:
                       -exchange name: {}
                       -routing key: {}
                       -host: {}
@@ -198,7 +198,7 @@ class DeliveryAction(Action):
         Sends a protocol reply message to the submitter
         """
         graph = build_reply(template, self.request.message_id, reason)
-        reply(graph.serialize(format='turtle'), exchange=exchange,
+        reply(graph.serialize(format='turtle'), exchange=_exchange,
               routing_key='{}.{}'.format(response_rk, self.request.submitted_by),
               **self.request.broker)
 
@@ -219,11 +219,11 @@ class DeliveryAction(Action):
         """
         try:
             self.__reply(failure_template, reason)
-            log.info('Notified failure of request {} due to: {}'.format(self.request_id, reason))
+            _log.info('Notified failure of request {} due to: {}'.format(self.request_id, reason))
         except Exception, e:
             # KeyError: Delivery channel data may be invalid
             # IOError: In this case, if even the failure message couldn't be sent, we cannot do anymore :)
-            log.warning('Sending failure message for request {}: {}'.format(self.request_id, e.message))
+            _log.warning('Sending failure message for request {}: {}'.format(self.request_id, e.message))
 
     def submit(self):
         """
@@ -239,7 +239,7 @@ class DeliveryAction(Action):
             try:
                 self.__reply_accepted()
             except Exception, e:
-                log.warning('Acceptance of request {} failed due to: {}'.format(self.request_id, e.message))
+                _log.warning('Acceptance of request {} failed due to: {}'.format(self.request_id, e.message))
                 # If the acceptance message couldn't be sent, remove the request and propagate the error
                 self.sink.remove()
                 raise
@@ -260,7 +260,7 @@ def used_channels():
             yield channel
         except Exception as e:
             traceback.print_exc()
-            log.warning(e.message)
+            _log.warning(e.message)
 
 
 def channel_sharing(channel_b64):
@@ -324,10 +324,10 @@ class DeliverySink(Sink):
         channel_b64 = r.hget(self._request_key, 'channel')
         sharing = channel_sharing(channel_b64)
         if not sharing:
-            log.info('Removing delivery channel ({}) for request {}'.format(channel_b64, self._request_id))
+            _log.info('Removing delivery channel ({}) for request {}'.format(channel_b64, self._request_id))
             pipe.delete('{}:channels:{}'.format(AGENT_ID, channel_b64))
         else:
-            log.info('Cannot remove delivery channel of request {}. It is being shared with {} another requests'.format(
+            _log.info('Cannot remove delivery channel of request {}. It is being shared with {} another requests'.format(
                 self.request_id, sharing))
 
         super(DeliverySink, self)._remove(pipe)
@@ -355,7 +355,7 @@ class DeliverySink(Sink):
                 p.srem(self.__ready_key, self._request_id)
             p.hset('{}'.format(self._request_key), 'delivery', value)
             p.execute()
-        log.info('Request {} delivery state is now "{}"'.format(self._request_id, value))
+        _log.info('Request {} delivery state is now "{}"'.format(self._request_id, value))
 
 
 class DeliveryResponse(Response):

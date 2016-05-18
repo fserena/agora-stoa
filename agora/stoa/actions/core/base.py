@@ -37,9 +37,9 @@ from shortuuid import uuid
 
 __author__ = 'Fernando Serena'
 
-log = logging.getLogger('agora.stoa.actions.base')
+_log = logging.getLogger('agora.stoa.actions.base')
 
-log.info('Cleaning agent lock...')
+_log.info('Cleaning agent lock...')
 r.delete('{}:lock'.format(AGENT_ID))
 
 
@@ -107,7 +107,7 @@ class Action(object):
         if not issubclass(self.response_class(), Response):
             raise SystemError(
                 'The response class for this action is invalid: {}'.format(self.response_class()))
-        log.info('Parsing request message...')
+        _log.info('Parsing request message...')
         self.request.parse(self.__message)
         self.__action_id = u'{}@{}'.format(self.request.message_id, self.request.submitted_by)
         self.__request_id = self.sink.save(self)
@@ -190,7 +190,7 @@ class Sink(object):
             # It is not until this point when the pipe is executed!
             # If it fails, nothing is stored
             self._pipe.execute()
-            log.info("""Request {} was saved:
+            _log.info("""Request {} was saved:
                         -message id: {}
                         -submitted on: {}
                         -submitted by: {}""".format(self._request_id, action.request.message_id,
@@ -216,7 +216,7 @@ class Sink(object):
                     p.delete(key)
                 self._remove(p)
                 p.execute()
-            log.info('Request {} was removed'.format(self._request_id))
+            _log.info('Request {} was removed'.format(self._request_id))
         finally:
             lock.release()
 
@@ -282,7 +282,7 @@ class Request(object):
         Parses the message and extracts all useful content
         :param message: The request message (RDF)
         """
-        log.debug('Parsing message...')
+        _log.debug('Parsing message...')
         try:
             self._graph.parse(StringIO.StringIO(message), format='turtle')
         except Exception, e:
@@ -320,7 +320,7 @@ class Request(object):
             if len(request_types) != 1 or request_type not in request_types:
                 raise SyntaxError('Invalid request type declaration')
 
-        log.debug(
+        _log.debug(
             """Parsed attributes of generic action request:
                 -message id: {}
                 -submitted on: {}

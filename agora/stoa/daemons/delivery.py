@@ -22,6 +22,7 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
 import logging
+import traceback
 from threading import Thread
 
 from agora.stoa.actions.core import AGENT_ID
@@ -32,20 +33,20 @@ from concurrent.futures.thread import ThreadPoolExecutor
 
 __author__ = 'Fernando Serena'
 
-log = logging.getLogger('agora.stoa.daemons.delivery')
+__log = logging.getLogger('agora.stoa.daemons.delivery')
 
 # Load environment variables
 MAX_CONCURRENT_DELIVERIES = int(app.config.get('PARAMS', {}).get('max_concurrent_deliveries', 8))
 
 # Delivery thread pool
-thp = ThreadPoolExecutor(max_workers=min(8, MAX_CONCURRENT_DELIVERIES))
+__thp = ThreadPoolExecutor(max_workers=min(8, MAX_CONCURRENT_DELIVERIES))
 
-log.info("""Delivery daemon setup:
+__log.info("""Delivery daemon setup:
                     - Maximum concurrent deliveries: {}""".format(MAX_CONCURRENT_DELIVERIES))
 
-deliveries_key = '{}:deliveries'.format(AGENT_ID)
-ready_key = '{}:ready'.format(deliveries_key)
-sent_key = '{}:sent'.format(deliveries_key)
+__deliveries_key = '{}:deliveries'.format(AGENT_ID)
+__ready_key = '{}:ready'.format(__deliveries_key)
+__sent_key = '{}:sent'.format(__deliveries_key)
 
 
 def build_response(rid):
@@ -96,73 +97,78 @@ def __deliver_response(rid):
                 n_messages += 1
                 if deliver_delta > 1000:
                     deliver_delta = 0
-                    log.info('Delivering response of request {} [{} kB]'.format(rid, deliver_weight / 1000.0))
+                    __log.info('Delivering response of request {} [{} kB]'.format(rid, deliver_weight / 1000.0))
 
             deliver_weight /= 1000.0
-            log.info('{} messages delivered for request {} [{} kB]'.format(n_messages, rid, deliver_weight))
+            __log.info('{} messages delivered for request {} [{} kB]'.format(n_messages, rid, deliver_weight))
 
         elif delivery_state == 'accepted':
-            log.error('Request {} should not be marked as deliver-ready, its state is inconsistent'.format(rid))
+            __log.error('Request {} should not be marked as deliver-ready, its state is inconsistent'.format(rid))
         else:
-            log.info('Response of request {} is being delivered by other means...'.format(rid))
-            r.srem(ready_key, rid)
+            __log.info('Response of request {} is being delivered by other means...'.format(rid))
+            r.srem(__ready_key, rid)
     except StopIteration:  # There was nothing prepared to deliver (Its state may have changed to
         # 'streaming')
-        r.srem(ready_key, rid)
+        r.srem(__ready_key, rid)
     except (EnvironmentError, AttributeError, Exception), e:
-        r.srem(ready_key, rid)
+        r.srem(__ready_key, rid)
         # traceback.print_exc()
-        log.warning(e.message)
+        __log.warning(e.message)
         if response is not None:
-            log.error('Force remove of request {} due to a delivery error'.format(rid))
+            __log.error('Force remove of request {} due to a delivery error'.format(rid))
             response.sink.remove()
         else:
-            log.error("Couldn't remove request {}".format(rid))
+            __log.error("Couldn't remove request {}".format(rid))
 
 
 def __deliver_responses():
     import time
-    log.info('Delivery daemon started')
+    __log.info('Delivery daemon started')
 
     # Declare in-progress deliveries dictionary
     futures = {}
     while True:
-        # Get all ready deliveries
-        ready = r.smembers(ready_key)
-        for rid in ready:
-            # If the delivery is not in the thread pool, just submit it
-            if rid not in futures:
-                log.info('Response delivery of request {} is ready. Putting it in queue...'.format(rid))
-                futures[rid] = thp.submit(__deliver_response, rid)
+        try:
+            # Get all ready deliveries
+            ready = r.smembers(__ready_key)
+            for rid in ready:
+                # If the delivery is not in the thread pool, just submit it
+                if rid not in futures:
+                    __log.info('Response delivery of request {} is ready. Putting it in queue...'.format(rid))
+                    futures[rid] = __thp.submit(__deliver_response, rid)
 
-        # Clear futures that have already ceased to be ready
-        for obsolete_rid in set.difference(set(futures.keys()), ready):
-            if obsolete_rid in futures and futures[obsolete_rid].done():
-                del futures[obsolete_rid]
+            # Clear futures that have already ceased to be ready
+            for obsolete_rid in set.difference(set(futures.keys()), ready):
+                if obsolete_rid in futures and futures[obsolete_rid].done():
+                    del futures[obsolete_rid]
 
-        # All those deliveries that are marked as 'sent' are being cleared here along its request data
-        sent = r.smembers(sent_key)
-        for rid in sent:
-            r.srem(ready_key, rid)
-            r.srem(deliveries_key, rid)
-            try:
-                response = build_response(rid)
-                response.sink.remove()
-                log.info('Request {} was sent and cleared'.format(rid))
-            except AttributeError:
-                log.warning('Request number {} was deleted by other means'.format(rid))
-                pass
-            r.srem(sent_key, rid)
-
-        time.sleep(0.1)
+            # All those deliveries that are marked as 'sent' are being cleared here along its request data
+            sent = r.smembers(__sent_key)
+            for rid in sent:
+                r.srem(__ready_key, rid)
+                r.srem(__deliveries_key, rid)
+                try:
+                    response = build_response(rid)
+                    response.sink.remove()  # Its lock is removed too
+                    __log.info('Request {} was sent and cleared'.format(rid))
+                except AttributeError:
+                    traceback.print_exc()
+                    __log.warning('Request number {} was deleted by other means'.format(rid))
+                    pass
+                r.srem(__sent_key, rid)
+        except Exception as e:
+            __log.error(e.message)
+            traceback.print_exc()
+        finally:
+            time.sleep(0.1)
 
 
 # Log delivery counters at startup
-registered_deliveries = r.scard(deliveries_key)
-deliveries_ready = r.scard(ready_key)
-log.info("""Delivery daemon started:
+__registered_deliveries = r.scard(__deliveries_key)
+__deliveries_ready = r.scard(__ready_key)
+__log.info("""Delivery daemon started:
                 - Deliveries: {}
-                - Ready: {}""".format(registered_deliveries, deliveries_ready))
+                - Ready: {}""".format(__registered_deliveries, __deliveries_ready))
 
 # Create and start delivery daemon
 __thread = Thread(target=__deliver_responses)

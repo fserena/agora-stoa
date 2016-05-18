@@ -44,22 +44,22 @@ import re
 
 __author__ = 'Fernando Serena'
 
-log = logging.getLogger('agora.stoa.store.triples')
-pool = ThreadPoolExecutor(max_workers=4)
+_log = logging.getLogger('agora.stoa.store.triples')
+_pool = ThreadPoolExecutor(max_workers=4)
 
 GRAPH_THROTTLING = max(1, int(app.config.get('CACHE', {}).get('graph_throttling', 30)))
 MIN_CACHE_TIME = max(0, int(app.config.get('CACHE', {}).get('min_cache_time', 10)))
 
-log.info("""Triple store setup:
+_log.info("""Triple store setup:
                     - Graph throttling: {}
                     - Minimum cache time: {}""".format(GRAPH_THROTTLING, MIN_CACHE_TIME))
 
-log.info('Cleaning cache...')
-uuid_locks = r.keys('{}:cache*'.format(AGENT_ID))
-for ulk in uuid_locks:
+_log.info('Cleaning cache...')
+__uuid_locks = r.keys('{}:cache*'.format(AGENT_ID))
+for ulk in __uuid_locks:
     r.delete(ulk)
-uuid_locks = r.keys('{}:cache*cnt'.format(AGENT_ID))
-for ulk in uuid_locks:
+__uuid_locks = r.keys('{}:cache*cnt'.format(AGENT_ID))
+for ulk in __uuid_locks:
     r.delete(ulk)
 
 
@@ -123,12 +123,12 @@ def add_stream_triple(fid, tp, (s, p, o), timestamp=None):
         return not_found
     except Exception as e:
         traceback.print_exc()
-        log.error(e.message)
+        _log.error(e.message)
 
 
 class GraphProvider(object):
     def __init__(self):
-        self.__last_creation_ts = dt.now()
+        self.__last_creation_ts = dt.utcnow()
         self.__graph_dict = {}
         self.__uuid_dict = {}
         self.__gid_uuid_dict = {}
@@ -136,7 +136,7 @@ class GraphProvider(object):
         self.__cache_key = '{}:cache'.format(AGENT_ID)
         self.__gids_key = '{}:gids'.format(self.__cache_key)
 
-        pool.submit(self.__purge)
+        _pool.submit(self.__purge)
 
     @staticmethod
     def __clean(name):
@@ -157,7 +157,7 @@ class GraphProvider(object):
                 if obsolete:
                     with r.pipeline(transaction=True) as p:
                         p.multi()
-                        log.info('Removing {} resouces from cache...'.format(len(obsolete)))
+                        _log.info('Removing {} resouces from cache...'.format(len(obsolete)))
                         for uuid in obsolete:
                             uuid_lock = self.uuid_lock(uuid)
                             uuid_lock.acquire()
@@ -177,13 +177,13 @@ class GraphProvider(object):
                                         del self.__graph_dict[g]
                                     except Exception, e:
                                         traceback.print_exc()
-                                        log.error('Purging resource {} with uuid {}'.format(gid, uuid))
+                                        _log.error('Purging resource {} with uuid {}'.format(gid, uuid))
                                 p.execute()
                             finally:
                                 uuid_lock.release()
             except Exception, e:
                 traceback.print_exc()
-                log.error(e.message)
+                _log.error(e.message)
             finally:
                 self.__lock.release()
             sleep(1)
@@ -221,7 +221,7 @@ class GraphProvider(object):
                             g = self.__uuid_dict[uuid]
                             uuid_lock.release()
                         else:
-                            post_ts = dt.now()
+                            post_ts = dt.utcnow()
                             elapsed = (post_ts - self.__last_creation_ts).total_seconds()
                             throttling = (1.0 / GRAPH_THROTTLING) - elapsed
                             if throttling > 0:
@@ -232,7 +232,7 @@ class GraphProvider(object):
                         counter_key = '{}:cnt'.format(temp_key)
                         if not r.exists(temp_key):
                             ttl = MIN_CACHE_TIME + int(2 * random())
-                            ttl_ts = calendar.timegm((dt.now() + datetime.timedelta(ttl)).timetuple())
+                            ttl_ts = calendar.timegm((dt.utcnow() + datetime.timedelta(ttl)).timetuple())
                             p.set(temp_key, ttl_ts)
                             p.expire(temp_key, ttl)
 
@@ -242,12 +242,12 @@ class GraphProvider(object):
                             p.hset(self.__gids_key, uuid, gid)
                             p.hset(self.__gids_key, gid, uuid)
                             p.execute()
-                            self.__last_creation_ts = dt.now()
+                            self.__last_creation_ts = dt.utcnow()
                             p.incr(counter_key)
                         uuid_lock = self.uuid_lock(uuid)
                         uuid_lock.acquire()
                 except Exception, e:
-                    log.error(e.message)
+                    _log.error(e.message)
                     traceback.print_exc()
             self.__graph_dict[g] = uuid
             self.__uuid_dict[uuid] = g
@@ -284,7 +284,7 @@ class GraphProvider(object):
                 if isinstance(g, ConjunctiveGraph):
                     if 'persist' in app.config['STORE']:
                         g.close()
-                        pool.submit(self.__clean, self.__graph_dict[g])
+                        _pool.submit(self.__clean, self.__graph_dict[g])
                     else:
                         g.remove((None, None, None))
                         g.close()
@@ -305,9 +305,9 @@ class GraphProvider(object):
             self.__lock.release()
 
 
-store_mode = app.config['STORE']
-if 'persist' in store_mode:
-    log.info('Creating store folders...')
+__store_mode = app.config['STORE']
+if 'persist' in __store_mode:
+    _log.info('Creating store folders...')
     if not os.path.exists('store'):
         os.makedirs('store')
     if os.path.exists('store/resources'):
@@ -316,12 +316,12 @@ if 'persist' in store_mode:
     cache_keys = r.keys('{}:cache*'.format(AGENT_ID))
     for ck in cache_keys:
         r.delete(ck)
-    log.info('Loading known triples...')
+    _log.info('Loading known triples...')
     fragments_cache = ConjunctiveGraph('Sleepycat')
-    log.info('Building fragments graph...')
+    _log.info('Building fragments graph...')
     fragments_cache.open('store/fragments', create=True)
     resources_cache = ConjunctiveGraph('Sleepycat')
-    log.info('Building resources graph...')
+    _log.info('Building resources graph...')
     resources_cache.open('store/resources', create=True)
 else:
     fragments_cache = ConjunctiveGraph()
@@ -331,5 +331,3 @@ fragments_cache.store.graph_aware = False
 resources_cache.store.graph_aware = False
 fragments_cache.bind('stoa', STOA)
 resources_cache.bind('stoa', STOA)
-
-graph_provider = GraphProvider()

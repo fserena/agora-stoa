@@ -35,7 +35,7 @@ BROKER = app.config['BROKER']
 
 __author__ = 'Fernando Serena'
 
-log = logging.getLogger('agora.stoa.messaging.reply')
+__log = logging.getLogger('agora.stoa.messaging.reply')
 
 
 def reply(message, exchange=None, routing_key=None, headers=None, host=BROKER['host'], port=BROKER['port'], vhost=None):
@@ -43,7 +43,7 @@ def reply(message, exchange=None, routing_key=None, headers=None, host=BROKER['h
     try:
         connection = pika.BlockingConnection(connection_params)
     except ConnectionClosed, e:
-        log.warning('Bad connection parameters: {}'.format(connection_params))
+        __log.warning('Bad connection parameters: {}'.format(connection_params))
         traceback.print_exc()
         return
 
@@ -64,7 +64,7 @@ def reply(message, exchange=None, routing_key=None, headers=None, host=BROKER['h
 
         if not sent:
             raise IOError('The channel {} does not exist'.format(routing_key))
-        log.debug('Sent message to delivery channel: \n -exchange: {}\n -routing_key: {}'.format(
+        __log.debug('Sent message to delivery channel: \n -exchange: {}\n -routing_key: {}'.format(
             exchange, routing_key
         ))
     except ChannelClosed:
