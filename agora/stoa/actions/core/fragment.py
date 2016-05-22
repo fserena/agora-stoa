@@ -389,10 +389,14 @@ class FragmentSink(DeliverySink):
             current_updated = r.get('{}:updated'.format(self._fragment_key))
             if current_updated is not None:
                 current_updated = dt.utcfromtimestamp(float(current_updated))
-                if dt.utcnow() - delta(seconds=requested_updating_delay) > current_updated:
-                    self._pipe.delete('{}:updated'.format(self._fragment_key))
+                utcnow = dt.utcnow()
+                limit = utcnow - delta(seconds=requested_updating_delay)
+                if limit > current_updated:
+                    diff = (limit - current_updated).total_seconds()
                     self._pipe.delete('{}:sync'.format(self._fragment_key))
                     fragment_synced = False
+                    # if diff > requested_updating_delay / 2.0:
+                    #     self._pipe.delete('{}:updated'.format(self._fragment_key))
 
             current_updating_delay = int(
                 r.get('{}:ud'.format(self._fragment_key))) if exists and fragment_synced else sys.maxint
@@ -400,8 +404,8 @@ class FragmentSink(DeliverySink):
                 self._pipe.set('{}:ud'.format(self._fragment_key), requested_updating_delay)
 
             # Update fragment request history
-            if not fragment_synced:
-                self._pipe.delete('{}:hist'.format(self._fragment_key))
+            # if not fragment_synced:
+            #     self._pipe.delete('{}:hist'.format(self._fragment_key))
             self._pipe.lpush('{}:hist'.format(self._fragment_key), calendar.timegm(datetime.utcnow().timetuple()))
             self._pipe.ltrim('{}:hist'.format(self._fragment_key), 0, 3)
 
