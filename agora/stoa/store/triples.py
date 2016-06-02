@@ -21,6 +21,7 @@
   limitations under the License.
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
+import StringIO
 import calendar
 import logging
 import shutil
@@ -30,6 +31,7 @@ from threading import Lock
 
 import datetime
 from datetime import datetime as dt
+from rdflib.graph import Graph
 from redis.lock import Lock as RedisLock
 from time import sleep
 
@@ -41,6 +43,7 @@ from agora.stoa.store import r
 from concurrent.futures import ThreadPoolExecutor
 from rdflib import ConjunctiveGraph, URIRef, Literal, XSD, BNode
 import re
+from agora.stoa.store.events import start_channel
 
 __author__ = 'Fernando Serena'
 
@@ -61,6 +64,8 @@ for ulk in __uuid_locks:
 __uuid_locks = r.keys('{}:cache*cnt'.format(AGENT_ID))
 for ulk in __uuid_locks:
     r.delete(ulk)
+
+event_resource_callbacks = set([])
 
 
 def load_stream_triples(fid, until):
@@ -137,6 +142,7 @@ class GraphProvider(object):
         self.__gids_key = '{}:gids'.format(self.__cache_key)
 
         _pool.submit(self.__purge)
+        start_channel('wot', 'wot.events', 'wot_events', self.resource_callback)
 
     @staticmethod
     def __clean(name):
@@ -304,6 +310,38 @@ class GraphProvider(object):
         finally:
             self.__lock.release()
 
+    def __delete_linked_resource(self, g, subject):
+        for (s, p, o) in g.triples((subject, None, None)):
+            self.__delete_linked_resource(g, o)
+            g.remove((s, p, o))
+
+    def resource_callback(self, method, properties, body):
+        subject = properties.headers.get('resource', None)
+        g = Graph()
+        g.parse(StringIO.StringIO(body), format='turtle')
+
+        if subject:
+            # self.__lock.acquire()
+            try:
+                uuid = r.hget(self.__gids_key, subject)
+                if uuid is not None:
+                    # print uuid
+                    cached_g = self.__uuid_dict[uuid]
+                    for (s, p, o) in g:
+                        for (s, p, ro) in cached_g.triples((s, p, None)):
+                            self.__delete_linked_resource(g, ro)
+                            cached_g.remove((s, p, ro))
+                        cached_g.add((s, p, o))
+                    # self.__uuid_dict[uuid].set((URIRef(body), 'http://'))
+                    # temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
+                    # with r.pipeline(transaction=True) as p:
+                    #     p.delete(temp_key)
+                    #     p.execute()
+            finally:
+                pass
+                # self.__lock.release()
+            [cb(body) for cb in event_resource_callbacks]
+
 
 __store_mode = app.config['STORE']
 if 'persist' in __store_mode:
@@ -320,9 +358,10 @@ if 'persist' in __store_mode:
     fragments_cache = ConjunctiveGraph('Sleepycat')
     _log.info('Building fragments graph...')
     fragments_cache.open('store/fragments', create=True)
-    resources_cache = ConjunctiveGraph('Sleepycat')
+    resources_cache = ConjunctiveGraph()
+    # resources_cache = ConjunctiveGraph('Sleepycat')
     _log.info('Building resources graph...')
-    resources_cache.open('store/resources', create=True)
+    # resources_cache.open('store/resources', create=True)
 else:
     fragments_cache = ConjunctiveGraph()
     resources_cache = ConjunctiveGraph()
