@@ -44,6 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 from rdflib import ConjunctiveGraph, URIRef, Literal, XSD, BNode
 import re
 from agora.stoa.store.events import start_channel
+from werkzeug.http import parse_dict_header
 
 __author__ = 'Fernando Serena'
 
@@ -141,6 +142,8 @@ class GraphProvider(object):
         self.__cache_key = '{}:cache'.format(AGENT_ID)
         self.__gids_key = '{}:gids'.format(self.__cache_key)
 
+        self.__resources_ts = {}
+
         _pool.submit(self.__purge)
         start_channel('wot', 'wot.events', 'wot_events', self.resource_callback)
 
@@ -155,7 +158,7 @@ class GraphProvider(object):
 
     def __purge(self):
         while True:
-            self.__lock.acquire()
+            # self.__lock.acquire()
             try:
                 obsolete = filter(lambda x: not r.exists('{}:cache:{}'.format(AGENT_ID, x)),
                                   r.smembers(self.__cache_key))
@@ -190,83 +193,97 @@ class GraphProvider(object):
             except Exception, e:
                 traceback.print_exc()
                 _log.error(e.message)
-            finally:
-                self.__lock.release()
+            # finally:
+            #     self.__lock.release()
             sleep(1)
 
     def create(self, conjunctive=False, gid=None, loader=None, format=None):
-        self.__lock.acquire()
-        uuid_lock = None
+        # self.__lock.acquire()
+        lock = None
         cached = False
+        temp_key = None
         p = r.pipeline(transaction=True)
         p.multi()
 
-        try:
-            uuid = shortuuid.uuid()
+        # try:
+        uuid = shortuuid.uuid()
 
-            if conjunctive:
-                if 'persist' in app.config['STORE']:
-                    g = ConjunctiveGraph('Sleepycat')
-                    g.open('store/resources/{}'.format(uuid), create=True)
-                else:
-                    g = ConjunctiveGraph()
-                g.store.graph_aware = False
-                self.__graph_dict[g] = uuid
-                self.__uuid_dict[uuid] = g
-                return g
+        if conjunctive:
+            if 'persist' in app.config['STORE']:
+                g = ConjunctiveGraph('Sleepycat')
+                g.open('store/resources/{}'.format(uuid), create=True)
             else:
-                g = resources_cache.get_context(uuid)
-                try:
-                    if gid is not None:
-                        st_uuid = r.hget(self.__gids_key, gid)
-                        if st_uuid is not None:
-                            cached = True
-                            uuid = st_uuid
-                            uuid_lock = self.uuid_lock(uuid)
-                            uuid_lock.acquire()
-                            g = self.__uuid_dict[uuid]
-                            uuid_lock.release()
-                        else:
-                            post_ts = dt.utcnow()
-                            elapsed = (post_ts - self.__last_creation_ts).total_seconds()
-                            throttling = (1.0 / GRAPH_THROTTLING) - elapsed
-                            if throttling > 0:
-                                print('waiting for {}'.format(throttling))
-                                sleep(throttling)
-
-                        temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
-                        counter_key = '{}:cnt'.format(temp_key)
-                        if not r.exists(temp_key):
-                            ttl = MIN_CACHE_TIME + int(2 * random())
-                            ttl_ts = calendar.timegm((dt.utcnow() + datetime.timedelta(ttl)).timetuple())
-                            p.set(temp_key, ttl_ts)
-                            p.expire(temp_key, ttl)
-
-                        if st_uuid is None:
-                            p.delete(counter_key)
-                            p.sadd(self.__cache_key, uuid)
-                            p.hset(self.__gids_key, uuid, gid)
-                            p.hset(self.__gids_key, gid, uuid)
-                            p.execute()
-                            self.__last_creation_ts = dt.utcnow()
-                            p.incr(counter_key)
-                        uuid_lock = self.uuid_lock(uuid)
-                        uuid_lock.acquire()
-                except Exception, e:
-                    _log.error(e.message)
-                    traceback.print_exc()
+                g = ConjunctiveGraph()
+            g.store.graph_aware = False
             self.__graph_dict[g] = uuid
             self.__uuid_dict[uuid] = g
-        finally:
-            self.__lock.release()
+            return g
+        else:
+            g = None
+            # g = resources_cache.get_context(uuid)
+            try:
+                # if gid is not None:
+                st_uuid = r.hget(self.__gids_key, gid)
+                if st_uuid is not None:
+                    cached = True
+                    uuid = st_uuid
+                    lock = self.uuid_lock(uuid)
+                    lock.acquire()
+                    g = self.__uuid_dict.get(uuid, None)
+                    lock.release()
+
+                if st_uuid is None or g is None:
+                    st_uuid = None
+                    cached = False
+                    uuid = shortuuid.uuid()
+                    g = resources_cache.get_context(uuid)
+                    post_ts = dt.utcnow()
+                    elapsed = (post_ts - self.__last_creation_ts).total_seconds()
+                    throttling = (1.0 / GRAPH_THROTTLING) - elapsed
+                    if throttling > 0:
+                        print('waiting for {}'.format(throttling))
+                        sleep(throttling)
+
+                temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
+                counter_key = '{}:cnt'.format(temp_key)
+
+                if st_uuid is None:
+                    p.delete(counter_key)
+                    p.sadd(self.__cache_key, uuid)
+                    p.hset(self.__gids_key, uuid, gid)
+                    p.hset(self.__gids_key, gid, uuid)
+                    p.execute()
+                    self.__last_creation_ts = dt.utcnow()
+                    p.incr(counter_key)
+                lock = self.uuid_lock(uuid)
+                lock.acquire()
+            except Exception, e:
+                _log.error(e.message)
+                traceback.print_exc()
+        if g is not None:
+            self.__graph_dict[g] = uuid
+            self.__uuid_dict[uuid] = g
+        # finally:
+        #     self.__lock.release()
 
         try:
             if cached:
                 return g
 
-            source = loader(gid, format)
+            source, headers = loader(gid, format)
             if not isinstance(source, bool):
                 g.parse(source=source, format=format)
+                if not r.exists(temp_key):
+                    cache_control = headers.get('Cache-Control', None)
+                    ttl = MIN_CACHE_TIME + int(2 * random())
+                    if cache_control is not None:
+                        cache_dict = parse_dict_header(cache_control)
+                        ttl = int(cache_dict.get('max-age', ttl))
+                    ttl_ts = calendar.timegm((dt.utcnow() + datetime.timedelta(ttl)).timetuple())
+                    p.set(temp_key, ttl_ts)
+                    p.expire(temp_key, ttl)
+                    p.execute()
+
                 return g
             else:
                 p.hdel(self.__gids_key, gid)
@@ -280,10 +297,11 @@ class GraphProvider(object):
                 return source
         finally:
             p.execute()
-            uuid_lock.release()
+            if lock is not None:
+                lock.release()
 
     def release(self, g):
-        self.__lock.acquire()
+        lock = None
         try:
             if g in self.__graph_dict:
                 removed = True
@@ -296,19 +314,21 @@ class GraphProvider(object):
                         g.close()
                 else:
                     uuid = self.__graph_dict[g]
-                    if not r.sismember(self.__cache_key, uuid):
-                        resources_cache.remove_context(resources_cache.get_context(self.__graph_dict[g]))
-                    else:
-                        r.decr('{}:cache:{}:cnt'.format(AGENT_ID, uuid))
-                        removed = False
-                        # The graph will be purged
+                    if uuid is not None:
+                        lock = GraphProvider.uuid_lock(uuid)
+                        lock.acquire()
+                        if r.sismember(self.__cache_key, uuid):
+                            r.decr('{}:cache:{}:cnt'.format(AGENT_ID, uuid))
+                            removed = False
+                            # The graph will be purged
 
                 if removed:
                     uuid = self.__graph_dict[g]
                     del self.__graph_dict[g]
                     del self.__uuid_dict[uuid]
         finally:
-            self.__lock.release()
+            if lock is not None:
+                lock.release()
 
     def __delete_linked_resource(self, g, subject):
         for (s, p, o) in g.triples((subject, None, None)):
@@ -317,30 +337,43 @@ class GraphProvider(object):
 
     def resource_callback(self, method, properties, body):
         subject = properties.headers.get('resource', None)
-        g = Graph()
-        g.parse(StringIO.StringIO(body), format='turtle')
+        print body
+        ts = properties.headers.get('ts', None)
+        if ts is not None:
+            ts = long(ts)
+            if subject in self.__resources_ts and ts <= self.__resources_ts[subject]:
+                return
 
-        if subject:
-            # self.__lock.acquire()
-            try:
+            self.__resources_ts[subject] = ts
+
+            g = Graph()
+            g.parse(StringIO.StringIO(body), format='turtle')
+
+            if subject:
+                # self.__lock.acquire()
                 uuid = r.hget(self.__gids_key, subject)
                 if uuid is not None:
-                    # print uuid
-                    cached_g = self.__uuid_dict[uuid]
-                    for (s, p, o) in g:
-                        for (s, p, ro) in cached_g.triples((s, p, None)):
-                            self.__delete_linked_resource(g, ro)
-                            cached_g.remove((s, p, ro))
-                        cached_g.add((s, p, o))
-                    # self.__uuid_dict[uuid].set((URIRef(body), 'http://'))
-                    # temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
-                    # with r.pipeline(transaction=True) as p:
-                    #     p.delete(temp_key)
-                    #     p.execute()
-            finally:
-                pass
-                # self.__lock.release()
-            [cb(body) for cb in event_resource_callbacks]
+                    lock = GraphProvider.uuid_lock(uuid)
+                    lock.acquire()
+                    try:
+
+                        # print uuid
+                        cached_g = self.__uuid_dict[uuid]
+                        for (s, p, o) in g:
+                            if (s, p, o) not in cached_g:
+                                for (s, p, ro) in cached_g.triples((s, p, None)):
+                                    self.__delete_linked_resource(cached_g, ro)
+                                    cached_g.remove((s, p, ro))
+                                cached_g.add((s, p, o))
+                        # self.__uuid_dict[uuid].set((URIRef(body), 'http://'))
+                        # temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
+                        # with r.pipeline(transaction=True) as p:
+                        #     p.delete(temp_key)
+                        #     p.execute()
+                    finally:
+                        lock.release()
+                    # self.__lock.release()
+                [cb(body) for cb in event_resource_callbacks]
 
 
 __store_mode = app.config['STORE']
