@@ -118,9 +118,10 @@ class FragmentRequest(DeliveryRequest):
 
         _log.debug('Extracted (fragment) pattern graph:\n{}'.format(self.__request_graph.serialize(format='turtle')))
 
-        q_res = self._graph.query("""SELECT ?r ?ud ?ag WHERE {
+        q_res = self._graph.query("""SELECT ?r ?ud ?ag ?ue WHERE {
                                 OPTIONAL { ?r stoa:expectedUpdatingDelay ?ud }
                                 OPTIONAL { ?r stoa:allowGeneralisation ?ag }
+                                OPTIONAL { ?r stoa:updateOnEvents ?ue }
                              }""")
         q_res = list(q_res)
         if len(q_res) > 1:
@@ -129,13 +130,15 @@ class FragmentRequest(DeliveryRequest):
         fragment_params = q_res.pop()
         if any(fragment_params):
             try:
-                parent_node, updating_delay, allow_gen = fragment_params
+                parent_node, updating_delay, allow_gen, update_events = fragment_params
                 if parent_node != self._request_node:
                     raise SyntaxError('Invalid parent node for stoa:expectedUpdatingDelay')
                 if updating_delay is not None:
                     self._fields['updating_delay'] = updating_delay.toPython()
                 if allow_gen is not None:
                     self._fields['allow_gen'] = allow_gen.toPython()
+                if update_events is not None:
+                    self._fields['update_events'] = update_events.toPython()
             except IndexError:
                 pass
 
@@ -248,7 +251,11 @@ class FragmentRequest(DeliveryRequest):
 
     @property
     def allow_generalisation(self):
-        return self._fields.get('allow_gen', True)
+        return self._fields.get('allow_gen', False)
+
+    @property
+    def update_on_events(self):
+        return self._fields.get('update_events', False)
 
 
 class FragmentAction(DeliveryAction):
@@ -402,6 +409,11 @@ class FragmentSink(DeliverySink):
                 r.get('{}:ud'.format(self._fragment_key))) if exists and fragment_synced else sys.maxint
             if current_updating_delay > requested_updating_delay:
                 self._pipe.set('{}:ud'.format(self._fragment_key), requested_updating_delay)
+
+            current_on_events = r.get('{}:events'.format(self._fragment_key))
+            requested_on_events = action.request.update_on_events
+            if current_on_events is None or (current_on_events is not None and current_on_events == 'True'):
+                self._pipe.set('{}:events'.format(self._fragment_key), requested_on_events)
 
             # Update fragment request history
             # if not fragment_synced:

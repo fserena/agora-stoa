@@ -322,10 +322,10 @@ class GraphProvider(object):
                             removed = False
                             # The graph will be purged
 
-                if removed:
-                    uuid = self.__graph_dict[g]
-                    del self.__graph_dict[g]
-                    del self.__uuid_dict[uuid]
+                # if removed:
+                #     uuid = self.__graph_dict[g]
+                #     del self.__graph_dict[g]
+                #     del self.__uuid_dict[uuid]
         finally:
             if lock is not None:
                 lock.release()
@@ -346,8 +346,8 @@ class GraphProvider(object):
 
             self.__resources_ts[subject] = ts
 
-            g = Graph()
-            g.parse(StringIO.StringIO(body), format='turtle')
+            # g = Graph()
+            # g.parse(StringIO.StringIO(body), format='turtle')
 
             if subject:
                 # self.__lock.acquire()
@@ -356,24 +356,38 @@ class GraphProvider(object):
                     lock = GraphProvider.uuid_lock(uuid)
                     lock.acquire()
                     try:
-
-                        # print uuid
-                        cached_g = self.__uuid_dict[uuid]
-                        for (s, p, o) in g:
-                            if (s, p, o) not in cached_g:
-                                for (s, p, ro) in cached_g.triples((s, p, None)):
-                                    self.__delete_linked_resource(cached_g, ro)
-                                    cached_g.remove((s, p, ro))
-                                cached_g.add((s, p, o))
-                        # self.__uuid_dict[uuid].set((URIRef(body), 'http://'))
-                        # temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
-                        # with r.pipeline(transaction=True) as p:
-                        #     p.delete(temp_key)
-                        #     p.execute()
+                        # cached_g = self.__uuid_dict[uuid]
+                        temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
+                        counter_key = '{}:cnt'.format(temp_key)
+                        with r.pipeline() as p:
+                            p.delete(temp_key)
+                            p.decr(counter_key)
+                            p.execute()
+                            # uuid = self.__graph_dict[cached_g]
+                            # del self.__graph_dict[cached_g]
+                            # del self.__uuid_dict[uuid]
                     finally:
                         lock.release()
+                    #
+                    # try:
+                    #
+                    #     # print uuid
+                    #     cached_g = self.__uuid_dict[uuid]
+                    #     for (s, p, o) in g:
+                    #         if (s, p, o) not in cached_g:
+                    #             for (s, p, ro) in cached_g.triples((s, p, None)):
+                    #                 self.__delete_linked_resource(cached_g, ro)
+                    #                 cached_g.remove((s, p, ro))
+                    #             cached_g.add((s, p, o))
+                    #     # self.__uuid_dict[uuid].set((URIRef(body), 'http://'))
+                    #     # temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
+                    #     # with r.pipeline(transaction=True) as p:
+                    #     #     p.delete(temp_key)
+                    #     #     p.execute()
+                    # finally:
+                    #     lock.release()
                     # self.__lock.release()
-                [cb(body) for cb in event_resource_callbacks]
+                [cb(subject) for cb in event_resource_callbacks]
 
 
 __store_mode = app.config['STORE']
@@ -392,6 +406,7 @@ if 'persist' in __store_mode:
     _log.info('Building fragments graph...')
     fragments_cache.open('store/fragments', create=True)
     resources_cache = ConjunctiveGraph()
+    # fragments_cache = ConjunctiveGraph()
     # resources_cache = ConjunctiveGraph('Sleepycat')
     _log.info('Building resources graph...')
     # resources_cache.open('store/resources', create=True)
