@@ -17,7 +17,7 @@ def __setup_channel(exchange, routing_key, queue, callback):
             channel.queue_declare(queue, durable=False)
             channel.queue_bind(exchange=exchange, queue=queue, routing_key=routing_key)
             channel.basic_consume(callback, queue=queue)
-            channel.basic_qos(prefetch_count=1)
+            # channel.basic_qos(prefetch_count=1)
             channel.start_consuming()
         except Exception as e:
             print e.message
