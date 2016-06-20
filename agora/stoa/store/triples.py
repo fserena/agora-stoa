@@ -344,38 +344,41 @@ class GraphProvider(object):
 
             if subject:
                 self.__lock.acquire()
-                uuid = r.hget(self.__gids_key, subject)
-                if uuid is not None:
-                    lock = GraphProvider.uuid_lock(uuid)
-                    self.__lock.release()
-                    lock.acquire()
-                    try:
+                lock = None
+                uuid = None
+                try:
+                    uuid = r.hget(self.__gids_key, subject)
+                    if uuid is not None:
+                        lock = GraphProvider.uuid_lock(uuid)
+                        self.__lock.release()
+                        lock.acquire()
+
                         if subject in self.__resources_ts and ts <= self.__resources_ts[subject]:
-                            return
+                            print 'ignoring {} event!'.format(subject)
+                            temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
+                            counter_key = '{}:cnt'.format(temp_key)
+                            with r.pipeline() as p:
+                                p.expire(temp_key, 2)
+                                p.decr(counter_key)
+                                p.execute()
+                        else:
+                            self.__resources_ts[subject] = ts
 
-                        self.__resources_ts[subject] = ts
+                            g = Graph()
+                            g.parse(StringIO.StringIO(body), format='turtle')
 
-                        g = Graph()
-                        g.parse(StringIO.StringIO(body), format='turtle')
-
-                        cached_g = self.__uuid_dict[uuid]
-                        for (s, p, o) in g:
-                            if (s, p, o) not in cached_g:
-                                for (s, p, ro) in cached_g.triples((s, p, None)):
-                                    self.__delete_linked_resource(cached_g, ro)
-                                    cached_g.remove((s, p, ro))
-                                cached_g.add((s, p, o))
-
-                        temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
-                        counter_key = '{}:cnt'.format(temp_key)
-                        with r.pipeline() as p:
-                            p.expire(temp_key, 2)
-                            p.decr(counter_key)
-                            p.execute()
-                    finally:
+                            cached_g = self.__uuid_dict[uuid]
+                            for (s, p, o) in g:
+                                if (s, p, o) not in cached_g:
+                                    for (s, p, ro) in cached_g.triples((s, p, None)):
+                                        self.__delete_linked_resource(cached_g, ro)
+                                        cached_g.remove((s, p, ro))
+                                    cached_g.add((s, p, o))
+                finally:
+                    if lock is not None:
                         lock.release()
-                        if uuid is None:
-                            self.__lock.release()
+                    if uuid is None:
+                        self.__lock.release()
 
                 [cb(subject) for cb in event_resource_callbacks]
 
