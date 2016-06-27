@@ -62,9 +62,6 @@ _log.info('Cleaning cache...')
 __uuid_locks = r.keys('{}:cache*'.format(AGENT_ID))
 for ulk in __uuid_locks:
     r.delete(ulk)
-__uuid_locks = r.keys('{}:cache*cnt'.format(AGENT_ID))
-for ulk in __uuid_locks:
-    r.delete(ulk)
 
 event_resource_callbacks = set([])
 
@@ -158,7 +155,7 @@ class GraphProvider(object):
 
     def __purge(self):
         while True:
-            # self.__lock.acquire()
+            self.__lock.acquire()
             try:
                 obsolete = filter(lambda x: not r.exists('{}:cache:{}'.format(AGENT_ID, x)),
                                   r.smembers(self.__cache_key))
@@ -193,8 +190,8 @@ class GraphProvider(object):
             except Exception, e:
                 traceback.print_exc()
                 _log.error(e.message)
-            # finally:
-            #     self.__lock.release()
+            finally:
+                self.__lock.release()
             sleep(1)
 
     def create(self, conjunctive=False, gid=None, loader=None, format=None):
