@@ -14,7 +14,11 @@ def __setup_channel(exchange, routing_key, queue, callback):
             channel.exchange_declare(exchange=exchange,
                                      type='topic', durable=True)
 
-            channel.queue_declare(queue, durable=False)
+            if queue is None:
+                queue = channel.queue_declare(auto_delete=True).method.queue
+            else:
+                channel.queue_declare(queue, durable=False)
+
             channel.queue_bind(exchange=exchange, queue=queue, routing_key=routing_key)
             channel.basic_consume(callback, queue=queue)
             # channel.basic_qos(prefetch_count=1)

@@ -53,6 +53,9 @@ _pool = ThreadPoolExecutor(max_workers=4)
 
 GRAPH_THROTTLING = max(1, int(app.config.get('CACHE', {}).get('graph_throttling', 30)))
 MIN_CACHE_TIME = max(0, int(app.config.get('CACHE', {}).get('min_cache_time', 10)))
+EVENTS_EXCHANGE = app.config.get('EVENTS_EXCHANGE', None)
+EVENTS_TOPIC = app.config.get('EVENTS_TOPIC', None)
+
 
 _log.info("""Triple store setup:
                     - Graph throttling: {}
@@ -142,7 +145,10 @@ class GraphProvider(object):
         self.__resources_ts = {}
 
         _pool.submit(self.__purge)
-        start_channel('wot', 'wot.events', 'wot_events', self.resource_callback)
+
+        if EVENTS_EXCHANGE is not None and EVENTS_TOPIC is not None:
+            # Create channel with an auto-delete queue (None parameter)
+            start_channel(EVENTS_EXCHANGE, EVENTS_TOPIC, None, self.resource_callback)
 
     @staticmethod
     def __clean(name):
@@ -195,14 +201,12 @@ class GraphProvider(object):
             sleep(1)
 
     def create(self, conjunctive=False, gid=None, loader=None, format=None):
-        # self.__lock.acquire()
         lock = None
         cached = False
         temp_key = None
         p = r.pipeline(transaction=True)
         p.multi()
 
-        # try:
         uuid = shortuuid.uuid()
 
         if conjunctive:
@@ -217,9 +221,7 @@ class GraphProvider(object):
             return g
         else:
             g = None
-            # g = resources_cache.get_context(uuid)
             try:
-                # if gid is not None:
                 st_uuid = r.hget(self.__gids_key, gid)
                 if st_uuid is not None:
                     cached = True
@@ -234,12 +236,6 @@ class GraphProvider(object):
                     cached = False
                     uuid = shortuuid.uuid()
                     g = resources_cache.get_context(uuid)
-                    post_ts = dt.utcnow()
-                    elapsed = (post_ts - self.__last_creation_ts).total_seconds()
-                    throttling = (1.0 / GRAPH_THROTTLING) - elapsed
-                    if throttling > 0:
-                        print('waiting for {}'.format(throttling))
-                        sleep(throttling)
 
                 temp_key = '{}:cache:{}'.format(AGENT_ID, uuid)
                 counter_key = '{}:cnt'.format(temp_key)
@@ -260,8 +256,6 @@ class GraphProvider(object):
         if g is not None:
             self.__graph_dict[g] = uuid
             self.__uuid_dict[uuid] = g
-        # finally:
-        #     self.__lock.release()
 
         try:
             if cached:
@@ -301,7 +295,6 @@ class GraphProvider(object):
         lock = None
         try:
             if g in self.__graph_dict:
-                removed = True
                 if isinstance(g, ConjunctiveGraph):
                     if 'persist' in app.config['STORE']:
                         g.close()
@@ -316,13 +309,6 @@ class GraphProvider(object):
                         lock.acquire()
                         if r.sismember(self.__cache_key, uuid):
                             r.decr('{}:cache:{}:cnt'.format(AGENT_ID, uuid))
-                            removed = False
-                            # The graph will be purged
-
-                # if removed:
-                #     uuid = self.__graph_dict[g]
-                #     del self.__graph_dict[g]
-                #     del self.__uuid_dict[uuid]
         finally:
             if lock is not None:
                 lock.release()
