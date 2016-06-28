@@ -53,8 +53,8 @@ _pool = ThreadPoolExecutor(max_workers=4)
 
 GRAPH_THROTTLING = max(1, int(app.config.get('CACHE', {}).get('graph_throttling', 30)))
 MIN_CACHE_TIME = max(0, int(app.config.get('CACHE', {}).get('min_cache_time', 10)))
-EVENTS_EXCHANGE = app.config.get('EVENTS_EXCHANGE', None)
-EVENTS_TOPIC = app.config.get('EVENTS_TOPIC', None)
+EVENTS_EXCHANGE = app.config.get('EVENTS', {}).get('exchange', None)
+EVENTS_TOPIC = app.config.get('EVENTS', {}).get('topic_pattern', None)
 
 
 _log.info("""Triple store setup:
@@ -148,6 +148,9 @@ class GraphProvider(object):
 
         if EVENTS_EXCHANGE is not None and EVENTS_TOPIC is not None:
             # Create channel with an auto-delete queue (None parameter)
+            _log.info("""Creating events channel:
+                    - exchange: {}
+                    - topic: {}""".format(EVENTS_EXCHANGE, EVENTS_TOPIC))
             start_channel(EVENTS_EXCHANGE, EVENTS_TOPIC, None, self.resource_callback)
 
     @staticmethod

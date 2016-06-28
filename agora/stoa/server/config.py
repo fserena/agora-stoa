@@ -70,6 +70,11 @@ def _broker_conf(def_host, def_port):
             'port': int(os.environ.get('AMQP_PORT', def_port))}
 
 
+def _events_conf(def_exchange, def_topic):
+    return {'exchange': os.environ.get('EVENTS_EXCHANGE', def_exchange),
+            'topic_pattern': os.environ.get('EVENTS_TOPIC', def_topic)}
+
+
 def _exchange_conf(def_exchange, def_queue, def_tp, def_response_rk):
     return {
         'exchange': os.environ.get('EXCHANGE_NAME', def_exchange),
@@ -103,6 +108,7 @@ class Config(object):
     AGORA = _agora_conf('localhost', 9002)
     BROKER = _broker_conf('localhost', 5672)
     EXCHANGE = _exchange_conf('stoa', 'stoa_requests', 'stoa.request.*', 'stoa.response')
+    EVENTS = _events_conf('stoa', 'stoa.events')
     BEHAVIOUR = _behaviour_conf(0.1)
     CACHE = _cache_conf(20, 60)
     ID = _agent_id()
