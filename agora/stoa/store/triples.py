@@ -55,11 +55,13 @@ GRAPH_THROTTLING = max(1, int(app.config.get('CACHE', {}).get('graph_throttling'
 MIN_CACHE_TIME = max(0, int(app.config.get('CACHE', {}).get('min_cache_time', 10)))
 EVENTS_EXCHANGE = app.config.get('EVENTS', {}).get('exchange', None)
 EVENTS_TOPIC = app.config.get('EVENTS', {}).get('topic_pattern', None)
-
+EVENTS_ON = EVENTS_EXCHANGE is not None and EVENTS_TOPIC is not None
 
 _log.info("""Triple store setup:
                     - Graph throttling: {}
-                    - Minimum cache time: {}""".format(GRAPH_THROTTLING, MIN_CACHE_TIME))
+                    - Minimum cache time: {}
+                    - Event listening: {} ({}, {})""".format(GRAPH_THROTTLING, MIN_CACHE_TIME, EVENTS_ON,
+                                                             EVENTS_EXCHANGE, EVENTS_TOPIC))
 
 _log.info('Cleaning cache...')
 __uuid_locks = r.keys('{}:cache*'.format(AGENT_ID))
@@ -146,7 +148,7 @@ class GraphProvider(object):
 
         _pool.submit(self.__purge)
 
-        if EVENTS_EXCHANGE is not None and EVENTS_TOPIC is not None:
+        if EVENTS_ON:
             # Create channel with an auto-delete queue (None parameter)
             _log.info("""Creating events channel:
                     - exchange: {}
