@@ -67,6 +67,7 @@ def reply(message, exchange=None, routing_key=None, headers=None, host=BROKER['h
         __log.debug('Sent message to delivery channel: \n -exchange: {}\n -routing_key: {}'.format(
             exchange, routing_key
         ))
+        channel.close()
     except ChannelClosed:
         raise EnvironmentError('The queue {} does not exist'.format(routing_key))
     finally:
