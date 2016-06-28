@@ -1,14 +1,20 @@
 from threading import Thread
 from time import sleep
+from agora.stoa.server import app
 
 import pika
 
 
+BROKER_CONFIG = app.config['BROKER']
+
+
 def __setup_channel(exchange, routing_key, queue, callback):
     while True:
+        connection = None
+        channel = None
         try:
             connection = pika.BlockingConnection(pika.ConnectionParameters(
-                host='localhost'))
+                host=BROKER_CONFIG['host'], port=BROKER_CONFIG['port']))
 
             channel = connection.channel()
             channel.exchange_declare(exchange=exchange,
@@ -21,10 +27,13 @@ def __setup_channel(exchange, routing_key, queue, callback):
 
             channel.queue_bind(exchange=exchange, queue=queue, routing_key=routing_key)
             channel.basic_consume(callback, queue=queue)
-            # channel.basic_qos(prefetch_count=1)
             channel.start_consuming()
         except Exception as e:
             print e.message
+            if channel is not None:
+                channel.close()
+            if connection is not None:
+                connection.close()
             sleep(1)
 
 
